@@ -1,0 +1,7 @@
+.env
+*.db
+__pycache__/
+*.pyc
+.vs/
+bot.py
+dashboard.py
