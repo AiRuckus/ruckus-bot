@@ -5,3 +5,4 @@ __pycache__/
 .vs/
 bot.py
 dashboard.py
+character.py
