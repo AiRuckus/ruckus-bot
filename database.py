@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 DB_NAME = "ruckus.db"
 
@@ -12,7 +12,6 @@ def init_db():
     conn = get_connection()
     c = conn.cursor()
     
-    # Stores every tweet Ruckus sees and responds to
     c.execute("""
         CREATE TABLE IF NOT EXISTS reply_queue (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,7 +25,6 @@ def init_db():
         )
     """)
     
-    # Stores conversation history per user for memory
     c.execute("""
         CREATE TABLE IF NOT EXISTS conversation_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,7 +36,6 @@ def init_db():
         )
     """)
     
-    # Stores Ruckus's unprompted posts queue
     c.execute("""
         CREATE TABLE IF NOT EXISTS post_queue (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,7 +46,6 @@ def init_db():
         )
     """)
     
-    # Stores flagged/suspicious interactions for your review
     c.execute("""
         CREATE TABLE IF NOT EXISTS flagged (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,12 +56,20 @@ def init_db():
         )
     """)
     
-    # Stores rate limiting data per user
     c.execute("""
         CREATE TABLE IF NOT EXISTS rate_limits (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT,
             interaction_time DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS engaged_tweets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tweet_id TEXT UNIQUE,
+            username TEXT,
+            engaged_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
@@ -84,7 +88,6 @@ def save_to_reply_queue(tweet_id, username, message, proposed_reply):
         conn.commit()
         return True
     except sqlite3.IntegrityError:
-        # Tweet already in queue
         return False
     finally:
         conn.close()
@@ -260,12 +263,40 @@ def save_to_post_queue(content):
 def tweet_already_seen(tweet_id):
     conn = get_connection()
     c = conn.cursor()
-    c.execute("""
-        SELECT id FROM reply_queue WHERE tweet_id = ?
-    """, (tweet_id,))
+    c.execute("SELECT id FROM reply_queue WHERE tweet_id = ?", (tweet_id,))
+    if c.fetchone():
+        conn.close()
+        return True
+    c.execute("SELECT id FROM engaged_tweets WHERE tweet_id = ?", (tweet_id,))
     result = c.fetchone()
     conn.close()
     return result is not None
+
+def mark_tweet_engaged(tweet_id, username):
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            INSERT INTO engaged_tweets (tweet_id, username)
+            VALUES (?, ?)
+        """, (tweet_id, username))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+def get_recent_engaged_tweets(hours=24):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        SELECT tweet_id, engaged_at FROM engaged_tweets
+        WHERE engaged_at > datetime('now', ?)
+    """, (f'-{hours} hours',))
+    results = [dict(row) for row in c.fetchall()]
+    conn.close()
+    return results
 
 if __name__ == "__main__":
     init_db()

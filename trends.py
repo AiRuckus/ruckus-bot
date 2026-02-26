@@ -2,6 +2,7 @@ import time
 import random
 from datetime import datetime, timedelta
 from kols import get_kol_profile, get_demonized_handles, get_praised_handles
+from database import mark_tweet_engaged, get_recent_engaged_tweets
 
 # ─────────────────────────────────────────
 # ENGAGEMENT SETTINGS
@@ -23,9 +24,22 @@ MAX_TWEET_AGE_HOURS = 24
 RUCKUS_HANDLE = "ruckusniggatron"
 
 # Track what we've already engaged with
+# Seeded from DB on startup so restarts don't cause duplicates
 engaged_tweets = {}
 last_feed_scan = None
 last_kol_scan = {}
+
+def load_engaged_from_db():
+    recent = get_recent_engaged_tweets(hours=24)
+    for row in recent:
+        try:
+            engaged_at = datetime.fromisoformat(row["engaged_at"])
+            engaged_tweets[row["tweet_id"]] = engaged_at
+        except:
+            pass
+    print(f"Loaded {len(engaged_tweets)} recent engagements from database")
+
+load_engaged_from_db()
 
 # ─────────────────────────────────────────
 # SCORING
@@ -94,8 +108,9 @@ def feed_on_cooldown():
     cooldown = timedelta(minutes=random.randint(FEED_COOLDOWN_MIN, FEED_COOLDOWN_MAX))
     return elapsed < cooldown
 
-def mark_engaged(tweet_id):
+def mark_engaged(tweet_id, username="unknown"):
     engaged_tweets[tweet_id] = datetime.now()
+    mark_tweet_engaged(tweet_id, username)
 
 def mark_kol_scanned(handle):
     last_kol_scan[handle.lower()] = datetime.now()
@@ -111,7 +126,6 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
         page.goto("https://x.com/explore/tabs/for-you")
         time.sleep(5)
 
-        # Two gentle scrolls to get 15-20 posts
         page.mouse.wheel(0, 1500)
         time.sleep(2)
         page.mouse.wheel(0, 1500)
@@ -207,7 +221,6 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
 
 # ─────────────────────────────────────────
 # KOL PAGE SCRAPER
-# One scroll to get 10-15 recent tweets
 # ─────────────────────────────────────────
 
 def get_kol_tweets(page, handle, is_demonized=False):
@@ -217,7 +230,6 @@ def get_kol_tweets(page, handle, is_demonized=False):
         page.goto(f"https://x.com/{handle}")
         time.sleep(4)
 
-        # One scroll to get 10-15 recent tweets
         page.mouse.wheel(0, 1500)
         time.sleep(2)
 
@@ -349,7 +361,8 @@ def scan_kol_pages(page, bot, generate_response_fn):
     demonized = [h for h in get_demonized_handles() if not kol_on_cooldown(h)]
     praised = [h for h in get_praised_handles() if not kol_on_cooldown(h)]
 
-    scan_pool = demonized * 3 + praised
+    # Balanced — demonized 2x, praised 2x
+    scan_pool = demonized * 2 + praised * 2
 
     if not scan_pool:
         print("All KOL accounts on cooldown")
@@ -390,7 +403,7 @@ def scan_kol_pages(page, bot, generate_response_fn):
         success = bot.post_reply(best["tweet_id"], handle, response)
 
         if success:
-            mark_engaged(best["tweet_id"])
+            mark_engaged(best["tweet_id"], handle)
             print(f"✅ Replied to @{handle} ({kol_data['tier']})")
             time.sleep(random.randint(30, 90))
             return True
@@ -450,7 +463,7 @@ def engage_for_you_feed(page, bot, generate_response_fn):
     success = bot.post_reply(best["tweet_id"], best["username"], response)
 
     if success:
-        mark_engaged(best["tweet_id"])
+        mark_engaged(best["tweet_id"], best["username"])
         print(f"✅ Replied to @{best['username']}")
         time.sleep(random.randint(60, 180))
         return True
