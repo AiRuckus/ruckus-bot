@@ -1,28 +1,42 @@
 import time
 import random
 from datetime import datetime, timedelta
+from kols import get_kol_profile, get_demonized_handles, get_praised_handles
 
 # ─────────────────────────────────────────
 # ENGAGEMENT SETTINGS
 # ─────────────────────────────────────────
 
 MIN_SCORE = 2000
+DEMONIZED_MIN_SCORE = 0
 TWEET_COOLDOWN_MINUTES = 60
+DEMONIZED_COOLDOWN_MINUTES = 20
 FEED_COOLDOWN_MIN = 15
 FEED_COOLDOWN_MAX = 45
+KOL_SCAN_COOLDOWN_MINUTES = 30
+
+# Recency settings
+RECENCY_HOURS = 6
+RECENCY_DECAY = 0.5
+MAX_TWEET_AGE_HOURS = 24
+
+RUCKUS_HANDLE = "ruckusniggatron"
 
 # Track what we've already engaged with
 engaged_tweets = {}
 last_feed_scan = None
+last_kol_scan = {}
 
 # ─────────────────────────────────────────
 # SCORING
 # ─────────────────────────────────────────
 
-def calculate_engagement_score(likes, retweets, replies, impressions=0):
+def calculate_engagement_score(likes, retweets, replies, impressions=0, age_hours=0):
     score = (likes * 1) + (retweets * 3) + (replies * 2)
     if impressions > 0:
         score = score * (1 + (impressions / 1000000))
+    if age_hours > RECENCY_HOURS:
+        score *= RECENCY_DECAY
     return score
 
 def parse_count(text):
@@ -39,12 +53,38 @@ def parse_count(text):
     except:
         return 0
 
-def is_on_cooldown(tweet_id):
+def get_tweet_age_hours(tweet):
+    try:
+        time_el = tweet.locator("time").first
+        datetime_attr = time_el.get_attribute("datetime")
+        if datetime_attr:
+            tweet_time = datetime.fromisoformat(datetime_attr.replace("Z", "+00:00"))
+            tweet_time = tweet_time.replace(tzinfo=None)
+            age = datetime.utcnow() - tweet_time
+            return age.total_seconds() / 3600
+    except:
+        pass
+    return 999
+
+def is_on_cooldown(tweet_id, is_demonized=False):
     if tweet_id in engaged_tweets:
         elapsed = datetime.now() - engaged_tweets[tweet_id]
-        if elapsed < timedelta(minutes=TWEET_COOLDOWN_MINUTES):
+        cooldown = DEMONIZED_COOLDOWN_MINUTES if is_demonized else TWEET_COOLDOWN_MINUTES
+        if elapsed < timedelta(minutes=cooldown):
             return True
     return False
+
+def kol_on_cooldown(handle):
+    handle = handle.lower()
+    if handle not in last_kol_scan:
+        return False
+    elapsed = datetime.now() - last_kol_scan[handle]
+    profile = get_kol_profile(handle)
+    if profile and profile["tier"] == "demonized":
+        cooldown = timedelta(minutes=DEMONIZED_COOLDOWN_MINUTES)
+    else:
+        cooldown = timedelta(minutes=KOL_SCAN_COOLDOWN_MINUTES)
+    return elapsed < cooldown
 
 def feed_on_cooldown():
     global last_feed_scan
@@ -57,13 +97,8 @@ def feed_on_cooldown():
 def mark_engaged(tweet_id):
     engaged_tweets[tweet_id] = datetime.now()
 
-def should_quote_tweet(score):
-    if score > 50000:
-        return random.random() < 0.7
-    elif score > 10000:
-        return random.random() < 0.4
-    else:
-        return random.random() < 0.2
+def mark_kol_scanned(handle):
+    last_kol_scan[handle.lower()] = datetime.now()
 
 # ─────────────────────────────────────────
 # FOR YOU FEED SCRAPER
@@ -76,17 +111,20 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
         page.goto("https://x.com/explore/tabs/for-you")
         time.sleep(5)
 
-        # Scroll to load more posts
-        for _ in range(3):
-            page.mouse.wheel(0, 1200)
-            time.sleep(1.5)
+        prev_count = 0
+        for _ in range(5):
+            page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
+            time.sleep(2 + random.uniform(0, 1))
+            current_count = page.locator('[data-testid="tweet"]').count()
+            if current_count >= 30 or current_count == prev_count:
+                break
+            prev_count = current_count
 
         tweet_elements = page.locator('[data-testid="tweet"]').all()
         print(f"Found {len(tweet_elements)} posts in For You feed")
 
-        for tweet in tweet_elements[:20]:
+        for tweet in tweet_elements:
             try:
-                # Get tweet text
                 text_el = tweet.locator('[data-testid="tweetText"]')
                 if not text_el.is_visible():
                     continue
@@ -95,15 +133,12 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
                 if len(text) < 15:
                     continue
 
-                # Get username
                 username_el = tweet.locator('[data-testid="User-Name"]')
                 username = username_el.inner_text().split("\n")[0].replace("@", "").strip()
 
-                # Skip Ruckus replying to himself
-                if username.lower() == "ruckusniggatron":
+                if username.lower() == RUCKUS_HANDLE:
                     continue
 
-                # Get tweet ID
                 links = tweet.locator("a[href*='/status/']").all()
                 tweet_id = None
                 for link in links:
@@ -115,31 +150,32 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
                 if not tweet_id:
                     continue
 
+                age_hours = get_tweet_age_hours(tweet)
+
+                if age_hours > MAX_TWEET_AGE_HOURS:
+                    print(f"Skipping old tweet from @{username} ({age_hours:.1f}h old)")
+                    continue
+
                 if is_on_cooldown(tweet_id):
                     continue
 
-                # Get engagement numbers
                 likes = retweets = replies = impressions = 0
 
                 try:
-                    like_text = tweet.locator('[data-testid="like"]').inner_text().strip()
-                    likes = parse_count(like_text)
+                    likes = parse_count(tweet.locator('[data-testid="like"]').inner_text().strip())
                 except:
                     pass
 
                 try:
-                    retweet_text = tweet.locator('[data-testid="retweet"]').inner_text().strip()
-                    retweets = parse_count(retweet_text)
+                    retweets = parse_count(tweet.locator('[data-testid="retweet"]').inner_text().strip())
                 except:
                     pass
 
                 try:
-                    reply_text = tweet.locator('[data-testid="reply"]').inner_text().strip()
-                    replies = parse_count(reply_text)
+                    replies = parse_count(tweet.locator('[data-testid="reply"]').inner_text().strip())
                 except:
                     pass
 
-                # Try to get impressions
                 try:
                     analytics = tweet.locator('[data-testid="app-text-transition-container"]').all()
                     for a in analytics:
@@ -149,7 +185,7 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
                 except:
                     pass
 
-                score = calculate_engagement_score(likes, retweets, replies, impressions)
+                score = calculate_engagement_score(likes, retweets, replies, impressions, age_hours)
 
                 if score >= min_score:
                     tweets.append({
@@ -160,10 +196,12 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
                         "retweets": retweets,
                         "replies": replies,
                         "impressions": impressions,
-                        "score": score
+                        "score": score,
+                        "age_hours": age_hours
                     })
 
-            except:
+            except Exception as e:
+                print(f"Tweet parse error: {e}")
                 continue
 
     except Exception as e:
@@ -172,15 +210,215 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
     return tweets
 
 # ─────────────────────────────────────────
-# MAIN SCAN AND ENGAGE
+# KOL PAGE SCRAPER
 # ─────────────────────────────────────────
 
-def scan_and_engage(page, bot, generate_response_fn):
+def get_kol_tweets(page, handle, is_demonized=False):
+    tweets = []
+    try:
+        print(f"Scanning @{handle}'s timeline...")
+        page.goto(f"https://x.com/{handle}")
+        time.sleep(4)
+
+        prev_count = 0
+        for _ in range(3):
+            page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
+            time.sleep(1.5 + random.uniform(0, 1))
+            current_count = page.locator('[data-testid="tweet"]').count()
+            if current_count == prev_count:
+                break
+            prev_count = current_count
+
+        tweet_elements = page.locator('[data-testid="tweet"]').all()
+        min_score = DEMONIZED_MIN_SCORE if is_demonized else MIN_SCORE
+
+        for tweet in tweet_elements:
+            try:
+                text_el = tweet.locator('[data-testid="tweetText"]')
+                if not text_el.is_visible():
+                    continue
+                text = text_el.inner_text()
+
+                if len(text) < 15:
+                    continue
+
+                links = tweet.locator("a[href*='/status/']").all()
+                tweet_id = None
+                for link in links:
+                    href = link.get_attribute("href")
+                    if "/status/" in href:
+                        tweet_id = href.split("/status/")[1].split("/")[0].split("?")[0]
+                        break
+
+                if not tweet_id:
+                    continue
+
+                age_hours = get_tweet_age_hours(tweet)
+
+                if age_hours > MAX_TWEET_AGE_HOURS:
+                    print(f"Skipping old tweet from @{handle} ({age_hours:.1f}h old)")
+                    continue
+
+                if is_on_cooldown(tweet_id, is_demonized):
+                    continue
+
+                likes = retweets = replies = 0
+
+                try:
+                    likes = parse_count(tweet.locator('[data-testid="like"]').inner_text().strip())
+                except:
+                    pass
+
+                try:
+                    retweets = parse_count(tweet.locator('[data-testid="retweet"]').inner_text().strip())
+                except:
+                    pass
+
+                try:
+                    replies = parse_count(tweet.locator('[data-testid="reply"]').inner_text().strip())
+                except:
+                    pass
+
+                score = calculate_engagement_score(likes, retweets, replies, age_hours=age_hours)
+
+                if score >= min_score:
+                    tweets.append({
+                        "tweet_id": tweet_id,
+                        "username": handle,
+                        "text": text,
+                        "likes": likes,
+                        "retweets": retweets,
+                        "replies": replies,
+                        "score": score,
+                        "age_hours": age_hours
+                    })
+
+            except Exception as e:
+                print(f"KOL tweet parse error: {e}")
+                continue
+
+    except Exception as e:
+        print(f"Error scraping @{handle}: {e}")
+
+    return tweets
+
+# ─────────────────────────────────────────
+# GENERATE KOL-AWARE RESPONSE
+# ─────────────────────────────────────────
+
+NO_EXPLAIN = (
+    "Output the response text ONLY. "
+    "No explanations, no commentary, no analysis of why it is funny, "
+    "no labels, no preamble. Just the raw tweet text and nothing else."
+)
+
+def build_kol_prompt(post, kol_data):
+    tier = kol_data["tier"]
+    profile = kol_data["profile"]
+
+    if tier == "demonized":
+        return (
+            f"You just saw this post from @{post['username']} — someone you absolutely despise:\n\n"
+            f"\"{post['text']}\"\n\n"
+            f"Here is what you know about them: {profile['description']}\n"
+            f"Key things to mock: {', '.join(profile['talking_points'])}\n"
+            f"Tone: {profile['ruckus_tone']}\n\n"
+            f"Respond as Uncle Ruckus. Go in hard. Be specific, funny, and devastating. "
+            f"One to two sentences maximum. Under 200 characters. Land the insult and stop. "
+            f"{NO_EXPLAIN}"
+        )
+    elif tier == "praised":
+        return (
+            f"You just saw this post from @{post['username']} — someone you deeply admire:\n\n"
+            f"\"{post['text']}\"\n\n"
+            f"Here is what you know about them: {profile['description']}\n"
+            f"Key talking points: {', '.join(profile['talking_points'])}\n"
+            f"Tone: {profile['ruckus_tone']}\n\n"
+            f"Respond as Uncle Ruckus. Show reverence and admiration in your signature style. "
+            f"One to two sentences maximum. Under 200 characters. Land the praise and stop. "
+            f"{NO_EXPLAIN}"
+        )
+    else:
+        return (
+            f"You just saw this post from @{post['username']} on your timeline:\n\n"
+            f"\"{post['text']}\"\n\n"
+            f"React to it as Uncle Ruckus. Be short, punchy, specific, and funny. "
+            f"One to two sentences maximum. Under 200 characters. Land the joke and stop. "
+            f"{NO_EXPLAIN}"
+        )
+
+# ─────────────────────────────────────────
+# SCAN KOL PAGES
+# Returns True if successfully engaged, False if nothing found
+# ─────────────────────────────────────────
+
+def scan_kol_pages(page, bot, generate_response_fn):
+    demonized = [h for h in get_demonized_handles() if not kol_on_cooldown(h)]
+    praised = [h for h in get_praised_handles() if not kol_on_cooldown(h)]
+
+    scan_pool = demonized * 3 + praised
+
+    if not scan_pool:
+        print("All KOL accounts on cooldown")
+        return False
+
+    # Shuffle so we don't always try same account first
+    random.shuffle(scan_pool)
+    # Deduplicate while preserving order
+    seen = set()
+    unique_pool = []
+    for h in scan_pool:
+        if h not in seen:
+            seen.add(h)
+            unique_pool.append(h)
+
+    # Try each KOL in order until one works
+    for handle in unique_pool:
+        kol_data = get_kol_profile(handle)
+        is_demonized = kol_data["tier"] == "demonized"
+
+        tweets = get_kol_tweets(page, handle, is_demonized)
+        mark_kol_scanned(handle)
+
+        if not tweets:
+            print(f"No recent tweets from @{handle}, trying next...")
+            continue
+
+        best = sorted(tweets, key=lambda x: x["score"], reverse=True)[0]
+
+        print(f"Engaging with @{handle} ({kol_data['tier']}) — score: {best['score']} | age: {best['age_hours']:.1f}h")
+
+        prompt = build_kol_prompt(best, kol_data)
+        response = generate_response_fn(prompt)
+
+        if not response:
+            continue
+
+        if len(response) > 280:
+            response = response[:277] + "..."
+
+        success = bot.post_reply(best["tweet_id"], handle, response)
+
+        if success:
+            mark_engaged(best["tweet_id"])
+            print(f"✅ Replied to @{handle} ({kol_data['tier']})")
+            time.sleep(random.randint(30, 90))
+            return True
+
+    # Nothing worked from KOL list
+    print("No actionable tweets found from any KOL — falling back to For You feed")
+    return False
+
+# ─────────────────────────────────────────
+# FOR YOU FEED ENGAGE
+# ─────────────────────────────────────────
+
+def engage_for_you_feed(page, bot, generate_response_fn):
     global last_feed_scan
 
     if feed_on_cooldown():
-        print("For You feed on cooldown, skipping...")
-        return
+        print("For You feed on cooldown")
+        return False
 
     print("\n🔍 Scanning For You feed...")
     last_feed_scan = datetime.now()
@@ -188,44 +426,61 @@ def scan_and_engage(page, bot, generate_response_fn):
     trending = get_for_you_tweets(page)
 
     if not trending:
-        print("No posts found above engagement threshold in For You feed")
-        return
+        print("No recent posts found above threshold in For You feed")
+        return False
 
-    # Sort by score and pick from top 3 randomly for variety
     trending.sort(key=lambda x: x["score"], reverse=True)
     top_posts = trending[:3]
     best = random.choice(top_posts)
 
-    print(f"Selected post from @{best['username']} — score: {best['score']} | likes: {best['likes']} | RTs: {best['retweets']}")
+    print(f"Selected post from @{best['username']} — score: {best['score']} | age: {best['age_hours']:.1f}h")
 
-    # Generate Ruckus response
-    context_prompt = (
-        f"You just saw this viral post from @{best['username']} on your timeline:\n\n"
-        f"\"{best['text']}\"\n\n"
-        f"It has {best['likes']} likes and {best['retweets']} retweets — clearly going viral.\n"
-        f"React to it as Uncle Ruckus in your signature style. "
-        f"Be short, punchy, specific, and funny. One to two sentences maximum. "
-        f"Keep it under 200 characters. Land the joke and stop."
-    )
+    kol_data = get_kol_profile(best["username"])
 
-    response = generate_response_fn(context_prompt)
+    if kol_data:
+        prompt = build_kol_prompt(best, kol_data)
+    else:
+        prompt = (
+            f"You just saw this viral post from @{best['username']} on your timeline:\n\n"
+            f"\"{best['text']}\"\n\n"
+            f"It has {best['likes']} likes and {best['retweets']} retweets — clearly going viral.\n"
+            f"React to it as Uncle Ruckus in your signature style. "
+            f"Be short, punchy, specific, and funny. One to two sentences maximum. "
+            f"Keep it under 200 characters. Land the joke and stop. "
+            f"{NO_EXPLAIN}"
+        )
+
+    response = generate_response_fn(prompt)
 
     if not response:
-        return
+        return False
 
     if len(response) > 280:
         response = response[:277] + "..."
 
-    # Decide whether to quote tweet or reply
-    if should_quote_tweet(best["score"]):
-        success = bot.quote_tweet(best["tweet_id"], response)
-        action = "Quote tweeted"
-    else:
-        success = bot.post_reply(best["tweet_id"], best["username"], response)
-        action = "Replied to"
+    success = bot.post_reply(best["tweet_id"], best["username"], response)
 
     if success:
         mark_engaged(best["tweet_id"])
-        print(f"✅ {action} @{best['username']}")
+        print(f"✅ Replied to @{best['username']}")
+        time.sleep(random.randint(60, 180))
+        return True
 
-    time.sleep(random.randint(60, 180))
+    return False
+
+# ─────────────────────────────────────────
+# MAIN SCAN AND ENGAGE
+# Always produces a result — cascades through fallbacks
+# ─────────────────────────────────────────
+
+def scan_and_engage(page, bot, generate_response_fn):
+    if random.random() < 0.6:
+        # Try KOL first, fall back to For You if nothing found
+        success = scan_kol_pages(page, bot, generate_response_fn)
+        if not success:
+            engage_for_you_feed(page, bot, generate_response_fn)
+    else:
+        # Try For You first, fall back to KOL if on cooldown or empty
+        success = engage_for_you_feed(page, bot, generate_response_fn)
+        if not success:
+            scan_kol_pages(page, bot, generate_response_fn)
