@@ -111,21 +111,18 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
         page.goto("https://x.com/explore/tabs/for-you")
         time.sleep(5)
 
-        prev_count = 0
-        for _ in range(5):
-            page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
-            time.sleep(2 + random.uniform(0, 1))
-            current_count = page.locator('[data-testid="tweet"]').count()
-            if current_count >= 30 or current_count == prev_count:
-                break
-            prev_count = current_count
+        # Two gentle scrolls to get 15-20 posts
+        page.mouse.wheel(0, 1500)
+        time.sleep(2)
+        page.mouse.wheel(0, 1500)
+        time.sleep(2)
 
         tweet_elements = page.locator('[data-testid="tweet"]').all()
         print(f"Found {len(tweet_elements)} posts in For You feed")
 
         for tweet in tweet_elements:
             try:
-                text_el = tweet.locator('[data-testid="tweetText"]')
+                text_el = tweet.locator('[data-testid="tweetText"]').first
                 if not text_el.is_visible():
                     continue
                 text = text_el.inner_text()
@@ -133,7 +130,7 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
                 if len(text) < 15:
                     continue
 
-                username_el = tweet.locator('[data-testid="User-Name"]')
+                username_el = tweet.locator('[data-testid="User-Name"]').first
                 username = username_el.inner_text().split("\n")[0].replace("@", "").strip()
 
                 if username.lower() == RUCKUS_HANDLE:
@@ -153,7 +150,6 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
                 age_hours = get_tweet_age_hours(tweet)
 
                 if age_hours > MAX_TWEET_AGE_HOURS:
-                    print(f"Skipping old tweet from @{username} ({age_hours:.1f}h old)")
                     continue
 
                 if is_on_cooldown(tweet_id):
@@ -162,17 +158,17 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
                 likes = retweets = replies = impressions = 0
 
                 try:
-                    likes = parse_count(tweet.locator('[data-testid="like"]').inner_text().strip())
+                    likes = parse_count(tweet.locator('[data-testid="like"]').first.inner_text().strip())
                 except:
                     pass
 
                 try:
-                    retweets = parse_count(tweet.locator('[data-testid="retweet"]').inner_text().strip())
+                    retweets = parse_count(tweet.locator('[data-testid="retweet"]').first.inner_text().strip())
                 except:
                     pass
 
                 try:
-                    replies = parse_count(tweet.locator('[data-testid="reply"]').inner_text().strip())
+                    replies = parse_count(tweet.locator('[data-testid="reply"]').first.inner_text().strip())
                 except:
                     pass
 
@@ -211,6 +207,7 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
 
 # ─────────────────────────────────────────
 # KOL PAGE SCRAPER
+# One scroll to get 10-15 recent tweets
 # ─────────────────────────────────────────
 
 def get_kol_tweets(page, handle, is_demonized=False):
@@ -220,21 +217,18 @@ def get_kol_tweets(page, handle, is_demonized=False):
         page.goto(f"https://x.com/{handle}")
         time.sleep(4)
 
-        prev_count = 0
-        for _ in range(3):
-            page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
-            time.sleep(1.5 + random.uniform(0, 1))
-            current_count = page.locator('[data-testid="tweet"]').count()
-            if current_count == prev_count:
-                break
-            prev_count = current_count
+        # One scroll to get 10-15 recent tweets
+        page.mouse.wheel(0, 1500)
+        time.sleep(2)
 
         tweet_elements = page.locator('[data-testid="tweet"]').all()
         min_score = DEMONIZED_MIN_SCORE if is_demonized else MIN_SCORE
 
+        print(f"Found {len(tweet_elements)} tweets on @{handle}'s page")
+
         for tweet in tweet_elements:
             try:
-                text_el = tweet.locator('[data-testid="tweetText"]')
+                text_el = tweet.locator('[data-testid="tweetText"]').first
                 if not text_el.is_visible():
                     continue
                 text = text_el.inner_text()
@@ -265,17 +259,17 @@ def get_kol_tweets(page, handle, is_demonized=False):
                 likes = retweets = replies = 0
 
                 try:
-                    likes = parse_count(tweet.locator('[data-testid="like"]').inner_text().strip())
+                    likes = parse_count(tweet.locator('[data-testid="like"]').first.inner_text().strip())
                 except:
                     pass
 
                 try:
-                    retweets = parse_count(tweet.locator('[data-testid="retweet"]').inner_text().strip())
+                    retweets = parse_count(tweet.locator('[data-testid="retweet"]').first.inner_text().strip())
                 except:
                     pass
 
                 try:
-                    replies = parse_count(tweet.locator('[data-testid="reply"]').inner_text().strip())
+                    replies = parse_count(tweet.locator('[data-testid="reply"]').first.inner_text().strip())
                 except:
                     pass
 
@@ -349,7 +343,6 @@ def build_kol_prompt(post, kol_data):
 
 # ─────────────────────────────────────────
 # SCAN KOL PAGES
-# Returns True if successfully engaged, False if nothing found
 # ─────────────────────────────────────────
 
 def scan_kol_pages(page, bot, generate_response_fn):
@@ -362,9 +355,7 @@ def scan_kol_pages(page, bot, generate_response_fn):
         print("All KOL accounts on cooldown")
         return False
 
-    # Shuffle so we don't always try same account first
     random.shuffle(scan_pool)
-    # Deduplicate while preserving order
     seen = set()
     unique_pool = []
     for h in scan_pool:
@@ -372,7 +363,6 @@ def scan_kol_pages(page, bot, generate_response_fn):
             seen.add(h)
             unique_pool.append(h)
 
-    # Try each KOL in order until one works
     for handle in unique_pool:
         kol_data = get_kol_profile(handle)
         is_demonized = kol_data["tier"] == "demonized"
@@ -405,7 +395,6 @@ def scan_kol_pages(page, bot, generate_response_fn):
             time.sleep(random.randint(30, 90))
             return True
 
-    # Nothing worked from KOL list
     print("No actionable tweets found from any KOL — falling back to For You feed")
     return False
 
@@ -470,17 +459,14 @@ def engage_for_you_feed(page, bot, generate_response_fn):
 
 # ─────────────────────────────────────────
 # MAIN SCAN AND ENGAGE
-# Always produces a result — cascades through fallbacks
 # ─────────────────────────────────────────
 
 def scan_and_engage(page, bot, generate_response_fn):
     if random.random() < 0.6:
-        # Try KOL first, fall back to For You if nothing found
         success = scan_kol_pages(page, bot, generate_response_fn)
         if not success:
             engage_for_you_feed(page, bot, generate_response_fn)
     else:
-        # Try For You first, fall back to KOL if on cooldown or empty
         success = engage_for_you_feed(page, bot, generate_response_fn)
         if not success:
             scan_kol_pages(page, bot, generate_response_fn)
