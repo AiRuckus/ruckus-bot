@@ -1,8 +1,9 @@
 import time
 import random
+import urllib.parse
 from datetime import datetime, timedelta
 from kols import get_kol_profile, get_demonized_handles, get_praised_handles
-from database import mark_tweet_engaged, get_recent_engaged_tweets
+from database import mark_tweet_engaged, get_recent_engaged_tweets, tweet_already_seen
 
 # ─────────────────────────────────────────
 # ENGAGEMENT SETTINGS
@@ -15,6 +16,7 @@ DEMONIZED_COOLDOWN_MINUTES = 20
 FEED_COOLDOWN_MIN = 15
 FEED_COOLDOWN_MAX = 45
 KOL_SCAN_COOLDOWN_MINUTES = 30
+WANDER_COOLDOWN_MINUTES = 20
 
 # Recency settings
 RECENCY_HOURS = 6
@@ -24,10 +26,10 @@ MAX_TWEET_AGE_HOURS = 24
 RUCKUS_HANDLE = "ruckusniggatron"
 
 # Track what we've already engaged with
-# Seeded from DB on startup so restarts don't cause duplicates
 engaged_tweets = {}
 last_feed_scan = None
 last_kol_scan = {}
+last_wander_scan = None
 
 def load_engaged_from_db():
     recent = get_recent_engaged_tweets(hours=24)
@@ -108,12 +110,291 @@ def feed_on_cooldown():
     cooldown = timedelta(minutes=random.randint(FEED_COOLDOWN_MIN, FEED_COOLDOWN_MAX))
     return elapsed < cooldown
 
+def wander_on_cooldown():
+    global last_wander_scan
+    if last_wander_scan is None:
+        return False
+    elapsed = datetime.now() - last_wander_scan
+    return elapsed < timedelta(minutes=WANDER_COOLDOWN_MINUTES)
+
 def mark_engaged(tweet_id, username="unknown"):
     engaged_tweets[tweet_id] = datetime.now()
     mark_tweet_engaged(tweet_id, username)
 
 def mark_kol_scanned(handle):
     last_kol_scan[handle.lower()] = datetime.now()
+
+# ─────────────────────────────────────────
+# TREND FILTER
+# Strips noise — numbers, short strings, 
+# tweet count labels that get scraped by mistake
+# ─────────────────────────────────────────
+
+def is_valid_trend(text):
+    if not text:
+        return False
+    # Skip anything that's just a number
+    if text.strip().replace(",", "").replace(".", "").isdigit():
+        return False
+    # Skip very short strings (under 3 chars)
+    if len(text.strip()) < 3:
+        return False
+    # Skip strings that are purely numeric with K/M suffix (tweet counts)
+    import re
+    if re.match(r'^\d+(\.\d+)?[KkMm]?$', text.strip()):
+        return False
+    # Skip common noise labels
+    noise = ["trending", "posts", "show more", "what's happening", "·"]
+    if text.strip().lower() in noise:
+        return False
+    return True
+
+# ─────────────────────────────────────────
+# SCRAPE TWEETS FROM A SEARCH URL
+# ─────────────────────────────────────────
+
+def scrape_tweets_from_page(page, min_score=500):
+    tweets = []
+    try:
+        page.mouse.wheel(0, 1500)
+        time.sleep(2)
+
+        tweet_elements = page.locator('[data-testid="tweet"]').all()
+
+        for tweet in tweet_elements:
+            try:
+                text_el = tweet.locator('[data-testid="tweetText"]').first
+                if not text_el.is_visible():
+                    continue
+                text = text_el.inner_text()
+
+                if len(text) < 15:
+                    continue
+
+                username_el = tweet.locator('[data-testid="User-Name"]').first
+                username = username_el.inner_text().split("\n")[0].replace("@", "").strip()
+
+                if username.lower() == RUCKUS_HANDLE:
+                    continue
+
+                links = tweet.locator("a[href*='/status/']").all()
+                tweet_id = None
+                for link in links:
+                    href = link.get_attribute("href")
+                    if "/status/" in href:
+                        tweet_id = href.split("/status/")[1].split("/")[0].split("?")[0]
+                        break
+
+                if not tweet_id:
+                    continue
+
+                # DB check — never reply to something we've already engaged with
+                if tweet_already_seen(tweet_id):
+                    continue
+
+                age_hours = get_tweet_age_hours(tweet)
+
+                if age_hours > MAX_TWEET_AGE_HOURS:
+                    continue
+
+                if is_on_cooldown(tweet_id):
+                    continue
+
+                likes = retweets = replies = impressions = 0
+
+                try:
+                    likes = parse_count(tweet.locator('[data-testid="like"]').first.inner_text().strip())
+                except:
+                    pass
+
+                try:
+                    retweets = parse_count(tweet.locator('[data-testid="retweet"]').first.inner_text().strip())
+                except:
+                    pass
+
+                try:
+                    replies = parse_count(tweet.locator('[data-testid="reply"]').first.inner_text().strip())
+                except:
+                    pass
+
+                try:
+                    analytics = tweet.locator('[data-testid="app-text-transition-container"]').all()
+                    for a in analytics:
+                        val = parse_count(a.inner_text())
+                        if val > impressions:
+                            impressions = val
+                except:
+                    pass
+
+                score = calculate_engagement_score(likes, retweets, replies, impressions, age_hours)
+
+                if score >= min_score:
+                    tweets.append({
+                        "tweet_id": tweet_id,
+                        "username": username,
+                        "text": text,
+                        "likes": likes,
+                        "retweets": retweets,
+                        "replies": replies,
+                        "impressions": impressions,
+                        "score": score,
+                        "age_hours": age_hours
+                    })
+
+            except Exception as e:
+                print(f"Tweet parse error: {e}")
+                continue
+
+    except Exception as e:
+        print(f"Error scraping page: {e}")
+
+    return tweets
+
+# ─────────────────────────────────────────
+# SCRAPE TRENDING TOPICS
+# ─────────────────────────────────────────
+
+def get_trending_topics(page):
+    topics = []
+    try:
+        print("Scraping trending topics...")
+        page.goto("https://x.com/explore/tabs/trending")
+        time.sleep(random.uniform(4, 7))
+
+        trend_elements = page.locator('[data-testid="trend"]').all()
+
+        for trend in trend_elements[:15]:
+            try:
+                text = trend.inner_text().strip()
+                if text:
+                    lines = [l.strip() for l in text.split("\n") if l.strip()]
+                    if lines:
+                        candidate = lines[0]
+                        # FIX 1 — filter out noise like "10", numbers, short strings
+                        if is_valid_trend(candidate):
+                            topics.append(candidate)
+            except:
+                continue
+
+        print(f"Found {len(topics)} trending topics")
+
+    except Exception as e:
+        print(f"Error scraping trends: {e}")
+
+    return topics
+
+# ─────────────────────────────────────────
+# VENICE PICKS THE MOST RUCKUS-RELEVANT TREND
+# ─────────────────────────────────────────
+
+def pick_ruckus_trend(trends, generate_response_fn):
+    if not trends:
+        return None
+
+    trend_list = "\n".join(f"- {t}" for t in trends)
+
+    prompt = (
+        f"Here are the current trending topics on Twitter:\n{trend_list}\n\n"
+        f"You are Uncle Ruckus. Pick the ONE topic from this list that you would "
+        f"have the strongest and funniest opinion about. "
+        f"Consider topics about race, politics, money, culture, celebrities, or anything "
+        f"that a man of your unique worldview would find outrageous or vindicating. "
+        f"Return ONLY the exact topic text from the list. Nothing else."
+    )
+
+    try:
+        result = generate_response_fn(prompt)
+        if result:
+            result = result.strip().strip('"').strip("'")
+            for trend in trends:
+                if result.lower() in trend.lower() or trend.lower() in result.lower():
+                    print(f"Ruckus chose trend: {trend}")
+                    return trend
+            chosen = random.choice(trends)
+            print(f"Ruckus defaulted to random trend: {chosen}")
+            return chosen
+    except Exception as e:
+        print(f"Trend picker error: {e}")
+
+    return random.choice(trends) if trends else None
+
+# ─────────────────────────────────────────
+# WANDER AND ENGAGE — TRENDING TOPICS
+# ─────────────────────────────────────────
+
+def wander_and_engage(page, bot, generate_response_fn):
+    global last_wander_scan
+
+    if wander_on_cooldown():
+        print("Wander on cooldown")
+        return False
+
+    print("\n🌍 Wandering into trending topics...")
+    last_wander_scan = datetime.now()
+
+    trends = get_trending_topics(page)
+
+    if not trends:
+        print("No trending topics found")
+        return False
+
+    chosen_trend = pick_ruckus_trend(trends, generate_response_fn)
+
+    if not chosen_trend:
+        return False
+
+    try:
+        search_url = f"https://x.com/search?q={urllib.parse.quote(chosen_trend)}&src=typed_query&f=live"
+        print(f"Searching: {chosen_trend}")
+        page.goto(search_url)
+        time.sleep(random.uniform(5, 8))
+    except Exception as e:
+        print(f"Search navigation error: {e}")
+        return False
+
+    tweets = scrape_tweets_from_page(page, min_score=500)
+
+    if not tweets:
+        print(f"No tweets found for trend: {chosen_trend}")
+        return False
+
+    tweets.sort(key=lambda x: x["score"], reverse=True)
+    top_tweets = tweets[:3]
+    best = random.choice(top_tweets)
+
+    print(f"Found tweet from @{best['username']} — score: {best['score']} | age: {best['age_hours']:.1f}h | trend: {chosen_trend}")
+
+    kol_data = get_kol_profile(best["username"])
+
+    if kol_data:
+        prompt = build_kol_prompt(best, kol_data)
+    else:
+        prompt = (
+            f"You just saw this tweet about \"{chosen_trend}\" which is currently trending:\n\n"
+            f"\"{best['text']}\"\n\n"
+            f"React to it as Uncle Ruckus in your signature style. "
+            f"Be short, punchy, specific, and funny. One to two sentences maximum. "
+            f"Keep it under 200 characters. Land the joke and stop. "
+            f"Output the response text ONLY. No explanations. Just the response."
+        )
+
+    response = generate_response_fn(prompt)
+
+    if not response:
+        return False
+
+    if len(response) > 280:
+        response = response[:277] + "..."
+
+    success = bot.post_reply(best["tweet_id"], best["username"], response)
+
+    if success:
+        mark_engaged(best["tweet_id"], best["username"])
+        print(f"✅ Replied to @{best['username']} on trend: {chosen_trend}")
+        time.sleep(random.randint(60, 180))
+        return chosen_trend
+
+    return False
 
 # ─────────────────────────────────────────
 # FOR YOU FEED SCRAPER
@@ -159,6 +440,10 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
                         break
 
                 if not tweet_id:
+                    continue
+
+                # DB check — never reply to something we've already engaged with
+                if tweet_already_seen(tweet_id):
                     continue
 
                 age_hours = get_tweet_age_hours(tweet)
@@ -257,6 +542,10 @@ def get_kol_tweets(page, handle, is_demonized=False):
                         break
 
                 if not tweet_id:
+                    continue
+
+                # FIX 2 — DB check prevents duplicate replies to KOL tweets across restarts
+                if tweet_already_seen(tweet_id):
                     continue
 
                 age_hours = get_tweet_age_hours(tweet)
@@ -361,7 +650,6 @@ def scan_kol_pages(page, bot, generate_response_fn):
     demonized = [h for h in get_demonized_handles() if not kol_on_cooldown(h)]
     praised = [h for h in get_praised_handles() if not kol_on_cooldown(h)]
 
-    # Balanced — demonized 2x, praised 2x
     scan_pool = demonized * 2 + praised * 2
 
     if not scan_pool:
@@ -406,9 +694,9 @@ def scan_kol_pages(page, bot, generate_response_fn):
             mark_engaged(best["tweet_id"], handle)
             print(f"✅ Replied to @{handle} ({kol_data['tier']})")
             time.sleep(random.randint(30, 90))
-            return True
+            return {"handle": handle, "tier": kol_data["tier"], "tweet": best["text"][:100]}
 
-    print("No actionable tweets found from any KOL — falling back to For You feed")
+    print("No actionable tweets found from any KOL — falling back")
     return False
 
 # ─────────────────────────────────────────
@@ -466,20 +754,34 @@ def engage_for_you_feed(page, bot, generate_response_fn):
         mark_engaged(best["tweet_id"], best["username"])
         print(f"✅ Replied to @{best['username']}")
         time.sleep(random.randint(60, 180))
-        return True
+        return {"username": best["username"], "tweet": best["text"][:100]}
 
     return False
 
 # ─────────────────────────────────────────
 # MAIN SCAN AND ENGAGE
+# Priority: 60% trending, 20% KOL, 20% For You fallback
 # ─────────────────────────────────────────
 
 def scan_and_engage(page, bot, generate_response_fn):
-    if random.random() < 0.6:
-        success = scan_kol_pages(page, bot, generate_response_fn)
-        if not success:
+    roll = random.random()
+
+    if roll < 0.60:
+        result = wander_and_engage(page, bot, generate_response_fn)
+        if not result:
+            result = scan_kol_pages(page, bot, generate_response_fn)
+            if not result:
+                engage_for_you_feed(page, bot, generate_response_fn)
+        return result
+
+    elif roll < 0.80:
+        result = scan_kol_pages(page, bot, generate_response_fn)
+        if not result:
             engage_for_you_feed(page, bot, generate_response_fn)
+        return result
+
     else:
-        success = engage_for_you_feed(page, bot, generate_response_fn)
-        if not success:
-            scan_kol_pages(page, bot, generate_response_fn)
+        result = engage_for_you_feed(page, bot, generate_response_fn)
+        if not result:
+            wander_and_engage(page, bot, generate_response_fn)
+        return result
