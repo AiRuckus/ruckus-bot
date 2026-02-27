@@ -1,3 +1,4 @@
+import re
 import time
 import random
 import urllib.parse
@@ -10,7 +11,7 @@ from database import mark_tweet_engaged, get_recent_engaged_tweets, tweet_alread
 # ─────────────────────────────────────────
 
 MIN_SCORE = 2000
-DEMONIZED_MIN_SCORE = 0
+DEMONIZED_MIN_SCORE = 200  # raised from 0 — filters out low engagement noise
 TWEET_COOLDOWN_MINUTES = 60
 DEMONIZED_COOLDOWN_MINUTES = 20
 FEED_COOLDOWN_MIN = 15
@@ -21,7 +22,7 @@ WANDER_COOLDOWN_MINUTES = 20
 # Recency settings
 RECENCY_HOURS = 6
 RECENCY_DECAY = 0.5
-MAX_TWEET_AGE_HOURS = 24
+MAX_TWEET_AGE_HOURS = 12  # tightened from 24 — keeps content fresher
 
 RUCKUS_HANDLE = "ruckusniggatron"
 
@@ -125,25 +126,33 @@ def mark_kol_scanned(handle):
     last_kol_scan[handle.lower()] = datetime.now()
 
 # ─────────────────────────────────────────
+# RETWEET CHECK
+# Returns True if the tweet is a repost/retweet
+# ─────────────────────────────────────────
+
+def is_retweet(tweet):
+    try:
+        social_context = tweet.locator('[data-testid="socialContext"]').first
+        text = social_context.inner_text(timeout=1000).strip()
+        if "reposted" in text.lower() or "retweeted" in text.lower():
+            return True
+    except:
+        pass
+    return False
+
+# ─────────────────────────────────────────
 # TREND FILTER
-# Strips noise — numbers, short strings, 
-# tweet count labels that get scraped by mistake
 # ─────────────────────────────────────────
 
 def is_valid_trend(text):
     if not text:
         return False
-    # Skip anything that's just a number
     if text.strip().replace(",", "").replace(".", "").isdigit():
         return False
-    # Skip very short strings (under 3 chars)
     if len(text.strip()) < 3:
         return False
-    # Skip strings that are purely numeric with K/M suffix (tweet counts)
-    import re
     if re.match(r'^\d+(\.\d+)?[KkMm]?$', text.strip()):
         return False
-    # Skip common noise labels
     noise = ["trending", "posts", "show more", "what's happening", "·"]
     if text.strip().lower() in noise:
         return False
@@ -163,6 +172,10 @@ def scrape_tweets_from_page(page, min_score=500):
 
         for tweet in tweet_elements:
             try:
+                # Skip retweets
+                if is_retweet(tweet):
+                    continue
+
                 text_el = tweet.locator('[data-testid="tweetText"]').first
                 if not text_el.is_visible():
                     continue
@@ -188,7 +201,6 @@ def scrape_tweets_from_page(page, min_score=500):
                 if not tweet_id:
                     continue
 
-                # DB check — never reply to something we've already engaged with
                 if tweet_already_seen(tweet_id):
                     continue
 
@@ -270,7 +282,6 @@ def get_trending_topics(page):
                     lines = [l.strip() for l in text.split("\n") if l.strip()]
                     if lines:
                         candidate = lines[0]
-                        # FIX 1 — filter out noise like "10", numbers, short strings
                         if is_valid_trend(candidate):
                             topics.append(candidate)
             except:
@@ -417,6 +428,10 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
 
         for tweet in tweet_elements:
             try:
+                # Skip retweets
+                if is_retweet(tweet):
+                    continue
+
                 text_el = tweet.locator('[data-testid="tweetText"]').first
                 if not text_el.is_visible():
                     continue
@@ -442,7 +457,6 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
                 if not tweet_id:
                     continue
 
-                # DB check — never reply to something we've already engaged with
                 if tweet_already_seen(tweet_id):
                     continue
 
@@ -525,6 +539,11 @@ def get_kol_tweets(page, handle, is_demonized=False):
 
         for tweet in tweet_elements:
             try:
+                # Skip retweets — only engage with original posts
+                if is_retweet(tweet):
+                    print(f"Skipping repost from @{handle}")
+                    continue
+
                 text_el = tweet.locator('[data-testid="tweetText"]').first
                 if not text_el.is_visible():
                     continue
@@ -544,7 +563,6 @@ def get_kol_tweets(page, handle, is_demonized=False):
                 if not tweet_id:
                     continue
 
-                # FIX 2 — DB check prevents duplicate replies to KOL tweets across restarts
                 if tweet_already_seen(tweet_id):
                     continue
 
