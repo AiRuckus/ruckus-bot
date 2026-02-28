@@ -11,7 +11,7 @@ from database import mark_tweet_engaged, get_recent_engaged_tweets, tweet_alread
 # ─────────────────────────────────────────
 
 MIN_SCORE = 2000
-DEMONIZED_MIN_SCORE = 200  # raised from 0 — filters out low engagement noise
+DEMONIZED_MIN_SCORE = 200
 TWEET_COOLDOWN_MINUTES = 60
 DEMONIZED_COOLDOWN_MINUTES = 20
 FEED_COOLDOWN_MIN = 15
@@ -19,14 +19,12 @@ FEED_COOLDOWN_MAX = 45
 KOL_SCAN_COOLDOWN_MINUTES = 30
 WANDER_COOLDOWN_MINUTES = 20
 
-# Recency settings
 RECENCY_HOURS = 6
 RECENCY_DECAY = 0.5
-MAX_TWEET_AGE_HOURS = 24  # tightened from 24 — keeps content fresher
+MAX_TWEET_AGE_HOURS = 24
 
 RUCKUS_HANDLE = "ruckusniggatron"
 
-# Track what we've already engaged with
 engaged_tweets = {}
 last_feed_scan = None
 last_kol_scan = {}
@@ -127,7 +125,6 @@ def mark_kol_scanned(handle):
 
 # ─────────────────────────────────────────
 # RETWEET CHECK
-# Returns True if the tweet is a repost/retweet
 # ─────────────────────────────────────────
 
 def is_retweet(tweet):
@@ -147,16 +144,170 @@ def is_retweet(tweet):
 def is_valid_trend(text):
     if not text:
         return False
-    if text.strip().replace(",", "").replace(".", "").isdigit():
+    text = text.strip()
+    if text.replace(",", "").replace(".", "").isdigit():
         return False
-    if len(text.strip()) < 3:
+    if len(text) < 3:
         return False
-    if re.match(r'^\d+(\.\d+)?[KkMm]?$', text.strip()):
+    if re.match(r'^\d+(\.\d+)?[KkMm]?$', text):
         return False
-    noise = ["trending", "posts", "show more", "what's happening", "·"]
-    if text.strip().lower() in noise:
+    noise = ["trending", "posts", "show more", "what's happening", "·", "promoted", "follow"]
+    if text.lower() in noise:
+        return False
+    # Skip pure number strings like "1,234 posts"
+    if re.match(r'^[\d,\s]+(posts?|tweets?)?$', text.lower()):
         return False
     return True
+
+# ─────────────────────────────────────────
+# SCRAPE TRENDING TOPICS — MULTI-STRATEGY
+# ─────────────────────────────────────────
+
+def get_trending_topics(page):
+    topics = []
+
+    # Strategy 1: explore trending tab
+    try:
+        print("Scraping trending topics...")
+        page.goto("https://x.com/explore/tabs/trending")
+        time.sleep(random.uniform(5, 8))
+
+        # Try multiple selectors — Twitter changes these frequently
+        selectors = [
+            '[data-testid="trend"]',
+            '[data-testid="trendItem"]',
+            'div[aria-label="Timeline: Explore"] div[role="link"]',
+            'section[aria-labelledby] div[role="link"]',
+        ]
+
+        for selector in selectors:
+            try:
+                elements = page.locator(selector).all()
+                if elements:
+                    for el in elements[:20]:
+                        try:
+                            text = el.inner_text().strip()
+                            if text:
+                                lines = [l.strip() for l in text.split("\n") if l.strip()]
+                                for line in lines:
+                                    if is_valid_trend(line) and line not in topics:
+                                        topics.append(line)
+                                        break
+                        except:
+                            continue
+                    if topics:
+                        break
+            except:
+                continue
+
+    except Exception as e:
+        print(f"Explore tab error: {e}")
+
+    # Strategy 2: sidebar trending on home — if explore failed
+    if not topics:
+        try:
+            page.goto("https://x.com/home")
+            time.sleep(random.uniform(4, 7))
+
+            sidebar_selectors = [
+                '[data-testid="trend"]',
+                '[aria-label="Timeline: Trending now"] div[role="link"]',
+                'aside div[role="link"]',
+            ]
+
+            for selector in sidebar_selectors:
+                try:
+                    elements = page.locator(selector).all()
+                    if elements:
+                        for el in elements[:15]:
+                            try:
+                                text = el.inner_text().strip()
+                                lines = [l.strip() for l in text.split("\n") if l.strip()]
+                                for line in lines:
+                                    if is_valid_trend(line) and line not in topics:
+                                        topics.append(line)
+                                        break
+                            except:
+                                continue
+                        if topics:
+                            break
+                except:
+                    continue
+
+        except Exception as e:
+            print(f"Home sidebar error: {e}")
+
+    # Strategy 3: search for trending hashtags directly
+    if not topics:
+        try:
+            page.goto("https://x.com/search?q=%23trending&f=live")
+            time.sleep(random.uniform(4, 7))
+
+            tweet_elements = page.locator('[data-testid="tweet"]').all()
+            hashtags = {}
+
+            for tweet in tweet_elements[:20]:
+                try:
+                    text = tweet.inner_text()
+                    found = re.findall(r'#(\w+)', text)
+                    for tag in found:
+                        if len(tag) > 3:
+                            hashtags[tag] = hashtags.get(tag, 0) + 1
+                except:
+                    continue
+
+            top_tags = sorted(hashtags.items(), key=lambda x: x[1], reverse=True)
+            topics = [f"#{tag}" for tag, count in top_tags[:10] if count > 1]
+
+        except Exception as e:
+            print(f"Hashtag search error: {e}")
+
+    # Deduplicate and clean
+    seen = set()
+    clean_topics = []
+    for t in topics:
+        t_clean = t.strip()
+        if t_clean.lower() not in seen and is_valid_trend(t_clean):
+            seen.add(t_clean.lower())
+            clean_topics.append(t_clean)
+
+    print(f"Found {len(clean_topics)} trending topics")
+    return clean_topics[:15]
+
+# ─────────────────────────────────────────
+# VENICE PICKS THE MOST RUCKUS-RELEVANT TREND
+# ─────────────────────────────────────────
+
+def pick_ruckus_trend(trends, generate_response_fn):
+    if not trends:
+        return None
+
+    trend_list = "\n".join(f"- {t}" for t in trends)
+
+    prompt = (
+        f"Here are the current trending topics on Twitter:\n{trend_list}\n\n"
+        f"You are Uncle Ruckus. Pick the ONE topic from this list that you would "
+        f"have the strongest and funniest opinion about. "
+        f"Consider topics about race, politics, money, culture, celebrities, or anything "
+        f"that a man of your unique worldview would find outrageous or vindicating. "
+        f"Return ONLY the exact topic text from the list. Nothing else."
+    )
+
+    try:
+        result = generate_response_fn(prompt)
+        if result:
+            result = result.strip().strip('"').strip("'")
+            for trend in trends:
+                if result.lower() in trend.lower() or trend.lower() in result.lower():
+                    print(f"Ruckus chose trend: {trend}")
+                    return trend
+            chosen = random.choice(trends)
+            print(f"Ruckus defaulted to random trend: {chosen}")
+            return chosen
+    except Exception as e:
+        print(f"Trend picker error: {e}")
+
+    return random.choice(trends) if trends else None
 
 # ─────────────────────────────────────────
 # SCRAPE TWEETS FROM A SEARCH URL
@@ -172,7 +323,6 @@ def scrape_tweets_from_page(page, min_score=500):
 
         for tweet in tweet_elements:
             try:
-                # Skip retweets
                 if is_retweet(tweet):
                     continue
 
@@ -218,17 +368,14 @@ def scrape_tweets_from_page(page, min_score=500):
                     likes = parse_count(tweet.locator('[data-testid="like"]').first.inner_text().strip())
                 except:
                     pass
-
                 try:
                     retweets = parse_count(tweet.locator('[data-testid="retweet"]').first.inner_text().strip())
                 except:
                     pass
-
                 try:
                     replies = parse_count(tweet.locator('[data-testid="reply"]').first.inner_text().strip())
                 except:
                     pass
-
                 try:
                     analytics = tweet.locator('[data-testid="app-text-transition-container"]').all()
                     for a in analytics:
@@ -254,80 +401,12 @@ def scrape_tweets_from_page(page, min_score=500):
                     })
 
             except Exception as e:
-                print(f"Tweet parse error: {e}")
                 continue
 
     except Exception as e:
         print(f"Error scraping page: {e}")
 
     return tweets
-
-# ─────────────────────────────────────────
-# SCRAPE TRENDING TOPICS
-# ─────────────────────────────────────────
-
-def get_trending_topics(page):
-    topics = []
-    try:
-        print("Scraping trending topics...")
-        page.goto("https://x.com/explore/tabs/trending")
-        time.sleep(random.uniform(6, 10))
-
-        trend_elements = page.locator('[data-testid="trend"]').all()
-
-        for trend in trend_elements[:15]:
-            try:
-                text = trend.inner_text().strip()
-                if text:
-                    lines = [l.strip() for l in text.split("\n") if l.strip()]
-                    if lines:
-                        candidate = lines[0]
-                        if is_valid_trend(candidate):
-                            topics.append(candidate)
-            except:
-                continue
-
-        print(f"Found {len(topics)} trending topics")
-
-    except Exception as e:
-        print(f"Error scraping trends: {e}")
-
-    return topics
-
-# ─────────────────────────────────────────
-# VENICE PICKS THE MOST RUCKUS-RELEVANT TREND
-# ─────────────────────────────────────────
-
-def pick_ruckus_trend(trends, generate_response_fn):
-    if not trends:
-        return None
-
-    trend_list = "\n".join(f"- {t}" for t in trends)
-
-    prompt = (
-        f"Here are the current trending topics on Twitter:\n{trend_list}\n\n"
-        f"You are Uncle Ruckus. Pick the ONE topic from this list that you would "
-        f"have the strongest and funniest opinion about. "
-        f"Consider topics about race, politics, money, culture, celebrities, or anything "
-        f"that a man of your unique worldview would find outrageous or vindicating. "
-        f"Return ONLY the exact topic text from the list. Nothing else."
-    )
-
-    try:
-        result = generate_response_fn(prompt)
-        if result:
-            result = result.strip().strip('"').strip("'")
-            for trend in trends:
-                if result.lower() in trend.lower() or trend.lower() in result.lower():
-                    print(f"Ruckus chose trend: {trend}")
-                    return trend
-            chosen = random.choice(trends)
-            print(f"Ruckus defaulted to random trend: {chosen}")
-            return chosen
-    except Exception as e:
-        print(f"Trend picker error: {e}")
-
-    return random.choice(trends) if trends else None
 
 # ─────────────────────────────────────────
 # WANDER AND ENGAGE — TRENDING TOPICS
@@ -415,7 +494,7 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
     tweets = []
     try:
         print("Navigating to For You feed...")
-        page.goto("https://x.com/explore/tabs/for-you")
+        page.goto("https://x.com/home")
         time.sleep(5)
 
         page.mouse.wheel(0, 1500)
@@ -428,7 +507,6 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
 
         for tweet in tweet_elements:
             try:
-                # Skip retweets
                 if is_retweet(tweet):
                     continue
 
@@ -474,17 +552,14 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
                     likes = parse_count(tweet.locator('[data-testid="like"]').first.inner_text().strip())
                 except:
                     pass
-
                 try:
                     retweets = parse_count(tweet.locator('[data-testid="retweet"]').first.inner_text().strip())
                 except:
                     pass
-
                 try:
                     replies = parse_count(tweet.locator('[data-testid="reply"]').first.inner_text().strip())
                 except:
                     pass
-
                 try:
                     analytics = tweet.locator('[data-testid="app-text-transition-container"]').all()
                     for a in analytics:
@@ -510,7 +585,6 @@ def get_for_you_tweets(page, min_score=MIN_SCORE):
                     })
 
             except Exception as e:
-                print(f"Tweet parse error: {e}")
                 continue
 
     except Exception as e:
@@ -539,7 +613,6 @@ def get_kol_tweets(page, handle, is_demonized=False):
 
         for tweet in tweet_elements:
             try:
-                # Skip retweets — only engage with original posts
                 if is_retweet(tweet):
                     print(f"Skipping repost from @{handle}")
                     continue
@@ -581,12 +654,10 @@ def get_kol_tweets(page, handle, is_demonized=False):
                     likes = parse_count(tweet.locator('[data-testid="like"]').first.inner_text().strip())
                 except:
                     pass
-
                 try:
                     retweets = parse_count(tweet.locator('[data-testid="retweet"]').first.inner_text().strip())
                 except:
                     pass
-
                 try:
                     replies = parse_count(tweet.locator('[data-testid="reply"]').first.inner_text().strip())
                 except:
@@ -607,7 +678,6 @@ def get_kol_tweets(page, handle, is_demonized=False):
                     })
 
             except Exception as e:
-                print(f"KOL tweet parse error: {e}")
                 continue
 
     except Exception as e:
