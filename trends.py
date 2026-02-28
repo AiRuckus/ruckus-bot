@@ -22,7 +22,7 @@ WANDER_COOLDOWN_MINUTES = 20
 # Recency settings
 RECENCY_HOURS = 6
 RECENCY_DECAY = 0.5
-MAX_TWEET_AGE_HOURS = 12  # tightened from 24 — keeps content fresher
+MAX_TWEET_AGE_HOURS = 24  # tightened from 24 — keeps content fresher
 
 RUCKUS_HANDLE = "ruckusniggatron"
 
@@ -271,7 +271,7 @@ def get_trending_topics(page):
     try:
         print("Scraping trending topics...")
         page.goto("https://x.com/explore/tabs/trending")
-        time.sleep(random.uniform(4, 7))
+        time.sleep(random.uniform(6, 10))
 
         trend_elements = page.locator('[data-testid="trend"]').all()
 
@@ -358,7 +358,7 @@ def wander_and_engage(page, bot, generate_response_fn):
         search_url = f"https://x.com/search?q={urllib.parse.quote(chosen_trend)}&src=typed_query&f=live"
         print(f"Searching: {chosen_trend}")
         page.goto(search_url)
-        time.sleep(random.uniform(5, 8))
+        time.sleep(random.uniform(8, 12))
     except Exception as e:
         print(f"Search navigation error: {e}")
         return False
