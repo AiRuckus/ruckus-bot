@@ -135,7 +135,7 @@ def is_retweet(tweet):
 # SCRAPE TWEETS FROM CURRENT PAGE
 # ─────────────────────────────────────────
 
-def scrape_tweets_from_page(page, min_score=500):
+def scrape_tweets_from_page(page, min_score=0):
     tweets = []
     try:
         page.mouse.wheel(0, 1500)

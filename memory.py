@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import requests
 from datetime import datetime
 
@@ -7,10 +8,6 @@ MEMORY_FILE = "ruckus_mind.json"
 
 VENICE_URL = "https://api.venice.ai/api/v1/chat/completions"
 MODEL = "venice-uncensored"
-
-# ─────────────────────────────────────────
-# DEFAULT MIND STATE
-# ─────────────────────────────────────────
 
 DEFAULT_MIND = {
     "current_obsessions": [
@@ -37,10 +34,6 @@ DEFAULT_MIND = {
     "last_updated": ""
 }
 
-# ─────────────────────────────────────────
-# LOAD / SAVE
-# ─────────────────────────────────────────
-
 def load_mind():
     if os.path.exists(MEMORY_FILE):
         try:
@@ -57,10 +50,6 @@ def save_mind(mind):
             json.dump(mind, f, indent=2)
     except Exception as e:
         print(f"Failed to save mind: {e}")
-
-# ─────────────────────────────────────────
-# CONTEXT INJECTION
-# ─────────────────────────────────────────
 
 def get_mind_injection():
     mind = load_mind()
@@ -89,26 +78,38 @@ def get_mind_injection():
 
     return injection
 
-# ─────────────────────────────────────────
-# LOG A POST
-# ─────────────────────────────────────────
+def is_duplicate_post(new_text, recent_posts):
+    new_lower = new_text.lower().strip()
+    for post in recent_posts:
+        post_lower = post.lower().strip()
+        # Exact match
+        if new_lower == post_lower:
+            return True
+        # First 60 chars match — same opening = same post
+        if len(new_lower) > 60 and len(post_lower) > 60:
+            if new_lower[:60] == post_lower[:60]:
+                return True
+        # High word overlap — more than 70% shared words
+        new_words = set(new_lower.split())
+        post_words = set(post_lower.split())
+        if new_words and post_words:
+            overlap = len(new_words & post_words) / max(len(new_words), len(post_words))
+            if overlap > 0.70:
+                return True
+    return False
 
 def log_post(post_text):
     mind = load_mind()
     recent_posts = mind.get("recent_posts", [])
 
-    # Duplicate guard — don't log the same post twice
-    if post_text not in recent_posts:
+    if not is_duplicate_post(post_text, recent_posts):
         recent_posts.append(post_text)
+    else:
+        print(f"⚠️ Duplicate post blocked: {post_text[:60]}...")
 
     mind["recent_posts"] = recent_posts[-15:]
     save_mind(mind)
 
-# ─────────────────────────────────────────
-# UPDATE MIND
-# ─────────────────────────────────────────
-
-# Mood palette — forces Venice to vary emotional range
 MOOD_PALETTE = [
     "righteous indignation at the state of the internet",
     "performative sadness for the lost souls of Black Twitter",
@@ -124,12 +125,9 @@ MOOD_PALETTE = [
     "unexpected fascination with the mathematical elegance of crypto that he will never admit",
 ]
 
-import random
-
 def update_mind(api_key, cycle_summary):
     mind = load_mind()
 
-    # Pick a mood direction to push Venice toward
     suggested_mood = random.choice(MOOD_PALETTE)
 
     prompt = (
@@ -160,7 +158,8 @@ def update_mind(api_key, cycle_summary):
         f"recent_experiences (list of 3-6 strings)\n"
         f"developing_beliefs (list of 2-4 strings)\n"
         f"mood (single string, varied and specific)\n\n"
-        f"No preamble. No explanation. Just the JSON."
+        f"CRITICAL: Return valid JSON only. No trailing commas. No line breaks inside strings. "
+        f"No preamble. No explanation. Just the JSON object."
     )
 
     headers = {
@@ -189,9 +188,14 @@ def update_mind(api_key, cycle_summary):
                 raw = raw[4:]
         raw = raw.strip()
 
+        # Find the JSON object boundaries in case there's extra text
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start != -1 and end > start:
+            raw = raw[start:end]
+
         updated = json.loads(raw)
 
-        # Preserve recent_posts
         updated["recent_posts"] = mind.get("recent_posts", [])
         updated["last_updated"] = datetime.now().isoformat()
 
