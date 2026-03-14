@@ -1,8 +1,49 @@
+# ─────────────────────────────────────────
+# RUCKUS BOT — .gitignore
+# ─────────────────────────────────────────
+
+# Environment variables — NEVER commit
 .env
+.env.*
+
+# Twitter session — contains auth tokens
+twitter_session.json
+
+# Database — local runtime data
+ruckus.db
 *.db
-__pycache__/
-*.pyc
-.vs/
-bot.py
-dashboard.py
+
+# Runtime memory and canon — generated data, not source
+ruckus_mind.json
+ruckus_canon.json
+ruckus_transcripts.json
+
+# Character prompt — kept private
 character.py
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# VS Code
+.vs/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Playwright browser cache
+playwright-browsers/

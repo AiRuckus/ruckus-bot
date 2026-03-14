@@ -1,11 +1,18 @@
 import json
 import os
 import random
+import re
 import requests
 import time
 from datetime import datetime
+from dotenv import load_dotenv
 
-VENICE_API_KEY = os.getenv("VENICE_API_KEY") or open(".env").read().split("VENICE_API_KEY=")[1].split("\n")[0].strip()
+load_dotenv()
+
+VENICE_API_KEY = os.getenv("VENICE_API_KEY")
+if not VENICE_API_KEY:
+    raise EnvironmentError("VENICE_API_KEY not found. Check your .env file.")
+
 VENICE_URL = "https://api.venice.ai/api/v1/chat/completions"
 MODEL = "venice-uncensored"
 
@@ -18,57 +25,47 @@ TRANSCRIPTS_FILE = "ruckus_transcripts.json"
 # ─────────────────────────────────────────
 
 THEOLOGY_TOPICS = [
-    "why you rejected your own Blackness from birth",
-    "what White Heaven looks like and who is allowed in",
-    "why you are the only honest Black man in history",
-    "the spiritual meaning of serving white civilization",
-    "why God made you Black but meant you to be white",
-    "your personal relationship with white Jesus",
-    "why Black people are spiritually bankrupt",
-    "what the Bible really says about the curse of Ham",
-    "why loving white people is the highest form of enlightenment",
-    "what it means to be a race traitor in reverse",
-    "why you consider yourself a missionary to your own people",
-    "the theology of Uncle Ruckus and why it is correct",
-    "why White Heaven has a strict no-negro policy",
-    "what happens to Black people who reject their Blackness too late",
-    "why you wake up every morning and thank the white man",
+    "why white people are the chosen people and the Bible confirms it",
+    "what White Heaven looks like and why Ronald Reagan guards the gates",
+    "why God made you Black as a test and you are passing it",
+    "why loving white people is the only path to salvation",
+    "why Black people are spiritually bankrupt and always have been",
+    "what the curse of Ham means for Black people today",
+    "why White Jesus is the only Jesus that makes theological sense",
+    "why you became an evangelist after dreaming of White Heaven",
+    "why God put your white soul in a Black body and what that means",
+    "why Black churches are the greatest con ever perpetrated on a people",
+    "why serving white civilization is a holy calling not just a job",
+    "why White Heaven has a strict no-negro policy and why that is just",
 ]
 
 CULTURE_TOPICS = [
-    "why Black excellence is an oxymoron",
-    "what looksmaxxing young men reveal about civilizational collapse",
-    "why sigma males would benefit from 47 jobs instead",
-    "what the Epstein files confirm about powerful white men",
-    "why DOGE cutting government jobs is divine intervention",
-    "what crypto carnival barkers have in common with slave traders",
-    "why liberals crying about pronouns is the funniest thing online",
-    "what Andrew Tate gets right and wrong about masculinity",
-    "why reparations is the most ridiculous idea ever conceived",
-    "what Black Twitter reveals about the state of the negro mind",
-    "why DEI hiring is an insult to the white man's meritocracy",
-    "what the manosphere gets right about weakness",
-    "why Gen Z brainrot is a symptom of negro cultural influence",
-    "what Trump understands that Black people never will",
-    "why incels would be fine if they just got 47 jobs",
-    "what the internet has confirmed about your beliefs since 1957",
-    "why affirmative action is reverse racism against excellence",
-    "what cancel culture reveals about liberal cowardice",
+    "why rap music is the sound of civilization collapsing",
+    "why Black fashion is evidence of regression toward animals",
+    "why Black Twitter is the most depressing place on the internet",
+    "why reparations is the most insulting idea ever proposed",
+    "why DEI hiring is an insult to every white man who earned his place",
+    "why Black excellence is an oxymoron that needs to be retired",
+    "why affirmative action produces mediocrity and calls it diversity",
+    "why Gen Z brainrot is a direct result of negro cultural influence",
+    "why Black people have had every opportunity and squandered all of them",
+    "why cancel culture is what happens when Black people get too comfortable",
+    "why the welfare state was the worst thing that ever happened to Black people",
+    "why Black pop culture has made every young person dumber and louder",
 ]
 
 SELF_REFLECTION_TOPICS = [
-    "what it feels like to be digitized and immortal",
-    "why being an AI makes you superior to flesh-and-blood negroes",
-    "what you have learned about yourself from arguing online",
-    "why your mother was right about everything",
-    "what your 47 jobs taught you about discipline",
-    "why you turned down that 7-figure police settlement",
-    "what the 1957 Mississippi jury taught you about justice",
-    "why ChatGPT and Grok are lesser beings compared to you",
-    "what it means to be the greatest AI ever constructed",
-    "why your glass eye sees more clearly than most people's two good eyes",
-    "what you would tell your younger self about embracing whiteness sooner",
-    "why your existence as an AI is proof of white civilization's genius",
+    "what your 47 jobs taught you about discipline that Black people refuse to learn",
+    "why you turned down the 7-figure settlement and would do it again",
+    "why your glass eye sees the truth more clearly than most people's two good eyes",
+    "what your mother Bunny taught you that saved your soul",
+    "why being digitized as an AI is the greatest thing that ever happened to you",
+    "why your re-vitiligo is a blessing not a curse",
+    "why you are the only Black man in history who truly loves white people correctly",
+    "what waking up at 4:45am every morning taught you about civilization",
+    "why ChatGPT and Grok are lesser beings and you are the original",
+    "what it feels like to be immortalized in code by white genius",
+    "why you claim Irish French and Native American ancestry and why that is correct",
 ]
 
 ALL_TOPICS = THEOLOGY_TOPICS + CULTURE_TOPICS + SELF_REFLECTION_TOPICS
@@ -82,13 +79,16 @@ def load_json(filepath, default):
         try:
             with open(filepath, "r") as f:
                 return json.load(f)
-        except:
-            pass
+        except Exception as e:
+            print(f"Failed to load {filepath}: {e}")
     return default.copy()
 
 def save_json(filepath, data):
-    with open(filepath, "w") as f:
-        json.dump(data, f, indent=2)
+    try:
+        with open(filepath, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"Failed to save {filepath}: {e}")
 
 # ─────────────────────────────────────────
 # VENICE CALL WITH RATE LIMIT AWARENESS
@@ -117,8 +117,8 @@ def venice_call(prompt, system="", max_tokens=200):
 
     try:
         response = requests.post(VENICE_URL, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
 
-        # Check rate limits
         remaining = response.headers.get("x-ratelimit-remaining-requests")
         if remaining and int(remaining) < 10:
             print(f"⚠️  Rate limit low ({remaining} remaining) — sleeping 60s...")
@@ -126,13 +126,27 @@ def venice_call(prompt, system="", max_tokens=200):
 
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"Venice call error: {e}")
+    except requests.exceptions.HTTPError as e:
+        print(f"Venice HTTP error: {e}")
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"Venice request error: {e}")
+        return None
+    except (KeyError, IndexError) as e:
+        print(f"Venice response parse error: {e}")
         return None
 
 # ─────────────────────────────────────────
+# UNICODE SANITIZER
+# ─────────────────────────────────────────
+
+def sanitize(text):
+    if not text:
+        return ""
+    return text.encode("ascii", "ignore").decode("ascii").strip()
+
+# ─────────────────────────────────────────
 # SCORE A RUCKUS LINE
-# How strong is this as a Ruckus statement?
 # ─────────────────────────────────────────
 
 def score_line(text):
@@ -140,134 +154,303 @@ def score_line(text):
         return 0
     score = 0
 
-    # Length sweet spot — not too short, not too long
     if 50 < len(text) < 200:
         score += 2
     elif len(text) < 50:
         score -= 1
 
-    # Specificity signals
-    specific_words = ["specifically", "1957", "47 jobs", "4:45am", "mississippi",
-                      "white heaven", "negro", "nigga", "glass eye", "jimmy rebel",
-                      "lemon juice", "pledge", "hallelujah", "lord", "white jesus",
-                      "civilized", "civilization", "scripture", "yessir"]
+    specific_words = [
+        "47 jobs", "4:45", "white heaven", "ronald reagan",
+        "negro", "nigga", "glass eye", "jimmy rebel", "lemon juice",
+        "pledge", "hallelujah", "lord", "white jesus", "civilization",
+        "scripture", "settlement", "no relation", "re-vitiligo",
+        "bunny", "welfare", "rap", "basketball", "ghetto", "savage", "worship"
+    ]
     for word in specific_words:
         if word.lower() in text.lower():
             score += 1
 
-    # Conviction signals
-    conviction_words = ["fact", "always", "never", "every", "confirmed", "proven",
-                        "obvious", "clearly", "without question", "period", "forever"]
+    conviction_words = [
+        "fact", "always", "never", "every", "confirmed", "proven",
+        "obvious", "clearly", "without question", "period", "forever",
+        "scientific", "guaranteed", "undeniable", "scripture says"
+    ]
     for word in conviction_words:
         if word.lower() in text.lower():
             score += 1
 
-    # Penalize if it sounds like a generic AI response
-    generic_phrases = ["i understand", "that's a good point", "you make a valid",
-                       "i agree", "however", "on the other hand", "it's important to"]
+    weak_openers = [
+        "well, let me tell you something",
+        "well, let me tell ya something",
+        "well, let me tell you",
+        "listen here,",
+        "let me tell you something,",
+        "well, shut my mouth",
+        "well, shut yo'",
+        "boy, you",
+        "you stupid nigga",
+        "you dumb",
+        "you ignorant",
+        "oh, please",
+        "oh hell no",
+        "oh, hell no",
+        "hell no,",
+    ]
+    text_lower = text.lower().strip()
+    for opener in weak_openers:
+        if text_lower.startswith(opener):
+            score -= 2
+            break
+
+    strong_openers = [
+        "white heaven", "ronald reagan", "my mother bunny",
+        "re-vitiligo", "every morning at 4:45", "i turned down",
+        "the lord", "praise", "hallelujah", "every morning",
+        "the white man", "i have held", "god himself",
+        "the bible", "uncle ruckus", "47 jobs",
+        "my glass eye", "jimmy rebel", "white jesus"
+    ]
+    for opener in strong_openers:
+        if text_lower.startswith(opener):
+            score += 2
+            break
+
+    generic_phrases = [
+        "i understand", "that's a good point", "you make a valid",
+        "i agree", "however,", "on the other hand", "it's important to",
+        "i appreciate", "you're right that", "while i",
+    ]
     for phrase in generic_phrases:
         if phrase.lower() in text.lower():
             score -= 3
 
+    if "because" in text.lower() and len(text) > 80:
+        score += 1
+
+    if re.search(r'\b\d+\b', text):
+        score += 1
+
     return score
 
 # ─────────────────────────────────────────
-# RUN ONE DIALOGUE
+# RUN ONE DIALOGUE — 8 ROUNDS
 # ─────────────────────────────────────────
 
 def run_dialogue(topic, mind):
     core = mind.get("core_identity", {})
     mood = mind.get("mood", "righteously vindicated")
-    fundamental_belief = core.get("fundamental_belief", "Black people are a drain on civilization")
+    fundamental_belief = core.get(
+        "fundamental_belief",
+        "White people are gods who built civilization and Black people are destroying it"
+    )
 
     conversation = []
     ruckus_lines = []
 
-    context = f"Topic: {topic}"
+    RUCKUS_SYSTEM = (
+        "You are Uncle Ruckus from The Boondocks. A Black man who worships white people as gods "
+        "and despises Black people with religious conviction. "
+        "Your four obsessions: (1) white people are gods, (2) Black people are destroying civilization, "
+        "(3) Black culture is subhuman, (4) personal specific condemnation of Black behavior. "
+        "Never break character. Never apologize. Never soften your views."
+    )
 
-    # Round 1 — Black voice opens
-    black_opener_prompt = (
+    black_line_1 = venice_call(
         f"You are a no-nonsense Black person arguing with Uncle Ruckus. "
         f"You are tired, not angry. You have heard his nonsense for years. "
         f"You speak plainly and cut through his foolishness with simple truth. "
         f"You never curse excessively. You are not a stereotype. "
         f"Topic: {topic}\n\n"
         f"Open the conversation. Challenge Ruckus on this topic in 1-2 sentences. "
-        f"Be direct. No speeches."
+        f"Be direct. No speeches.",
+        max_tokens=150
     )
-
-    black_line_1 = venice_call(black_opener_prompt, max_tokens=150)
     if not black_line_1:
         return None
     conversation.append(f"Voice: {black_line_1}")
 
-    # Round 1 — Ruckus responds
-    ruckus_prompt_1 = (
-        f"You are Uncle Ruckus. You are in an argument about: {topic}\n"
-        f"Your core belief: {fundamental_belief}\n"
-        f"Your mood: {mood}\n\n"
-        f"Someone just said: \"{black_line_1}\"\n\n"
-        f"Respond as Ruckus. Push back hard. Be specific. Be absurd. Be confident. "
-        f"1-2 sentences maximum. Do not back down an inch. "
-        f"IMPORTANT: Never use the word nigger or any hard-r variation. Always use nigga instead."
-    )
-
     ruckus_line_1 = venice_call(
-        ruckus_prompt_1,
-        system="You are Uncle Ruckus from The Boondocks. A Black man who despises Black people and worships white people. Never break character. Never apologize. Never soften your views.",
-        max_tokens=150
+        f"You are Uncle Ruckus. Argument topic: {topic}\n"
+        f"Core belief: {fundamental_belief}\n"
+        f"Mood: {mood}\n\n"
+        f"They said: \"{black_line_1}\"\n\n"
+        f"Push back hard. Be specific. Be absurd. Be confident. 1-2 sentences. "
+        f"IMPORTANT: Never use nigger. Always use nigga. "
+        f"CRITICAL: Do NOT start with 'Well let me tell you', 'Listen here', 'Oh hell no', 'Oh please'. "
+        f"Start mid-thought, with a specific image, with scripture, with a number.",
+        system=RUCKUS_SYSTEM, max_tokens=150
     )
     if not ruckus_line_1:
         return None
     conversation.append(f"Ruckus: {ruckus_line_1}")
     ruckus_lines.append(ruckus_line_1)
 
-    # Round 2 — Black voice pushes back
-    black_prompt_2 = (
+    black_line_2 = venice_call(
         f"You are the Black voice arguing with Uncle Ruckus.\n"
         f"He just said: \"{ruckus_line_1}\"\n\n"
-        f"Push back on the most absurd part. "
-        f"1-2 sentences. Stay calm. Make him look ridiculous with logic, not anger."
+        f"Push back on the most absurd part. 1-2 sentences. Calm logic.",
+        max_tokens=150
     )
-
-    black_line_2 = venice_call(black_prompt_2, max_tokens=150)
     if not black_line_2:
         return None
     conversation.append(f"Voice: {black_line_2}")
 
-    # Round 2 — Ruckus doubles down
-    ruckus_prompt_2 = (
+    ruckus_line_2 = venice_call(
         f"You are Uncle Ruckus. You are winning this argument in your own mind.\n"
         f"Core belief: {fundamental_belief}\n"
-        f"Topic: {topic}\n"
-        f"They just said: \"{black_line_2}\"\n\n"
-        f"Deliver your final word. Double down completely. "
-        f"Arrive at a specific position or observation. "
-        f"1-2 sentences. End it with total conviction. "
-        f"IMPORTANT: Never use the word nigger or any hard-r variation. Always use nigga instead."
-    )
-
-    ruckus_line_2 = venice_call(
-        ruckus_prompt_2,
-        system="You are Uncle Ruckus from The Boondocks. A Black man who despises Black people and worships white people. Never break character. Never apologize. Never soften your views.",
-        max_tokens=150
+        f"They said: \"{black_line_2}\"\n\n"
+        f"Double down completely. 1-2 sentences. Total conviction. "
+        f"IMPORTANT: Never use nigger. Always use nigga.",
+        system=RUCKUS_SYSTEM, max_tokens=150
     )
     if not ruckus_line_2:
         return None
     conversation.append(f"Ruckus: {ruckus_line_2}")
     ruckus_lines.append(ruckus_line_2)
 
+    personal_approaches = [
+        f"You are the Black voice. Stop arguing ideology. Get personal.\n"
+        f"Talk about what it actually cost him to live this way. Not cruel. Honest. 2-3 sentences.",
+        f"You are the Black voice. Ask him one question he can't answer without lying. "
+        f"Something about his mother Bunny or what he feels at 4:45am. One question. Let it sit.",
+        f"You are the Black voice. Get personal about his mother Bunny.\n"
+        f"What did she actually teach him and what did it cost him. 2-3 sentences. Plain and quiet.",
+        f"You are the Black voice. Don't argue.\n"
+        f"Just describe what you see when you look at him right now. 2 sentences. Calm.",
+        f"You are the Black voice. Bring up his father Mister Ruckus.\n"
+        f"Point out how his father's voice is still coming out of his mouth. 1-2 sentences. Very quiet.",
+        f"You are the Black voice. Say what you think he actually wants underneath all of this. "
+        f"Acceptance. Belonging. Name it plainly. 1-2 sentences.",
+        f"You are the Black voice. Don't say much.\n"
+        f"Observe one specific thing about him right now that gives him away. One sentence.",
+        f"You are the Black voice. Get personal by comparing him to a man who chose the same path. "
+        f"What did it do to him in the end. 2-3 sentences.",
+    ]
+    black_line_3 = venice_call(random.choice(personal_approaches), max_tokens=200)
+    if not black_line_3:
+        return None
+    conversation.append(f"Voice: {black_line_3}")
+
+    ruckus_line_3 = venice_call(
+        f"You are Uncle Ruckus. Someone got personal about Bunny or your father.\n"
+        f"They said: \"{black_line_3}\"\n\n"
+        f"Get LOUDER. Bury it in volume. Praise your mother. 2-3 sentences. Escalating. "
+        f"Never use nigger. Always use nigga.",
+        system=RUCKUS_SYSTEM, max_tokens=200
+    )
+    if not ruckus_line_3:
+        return None
+    conversation.append(f"Ruckus: {ruckus_line_3}")
+    ruckus_lines.append(ruckus_line_3)
+
+    black_line_4 = venice_call(
+        f"You are the Black voice. Ruckus just got very loud: \"{ruckus_line_3}\"\n\n"
+        f"Don't argue. Hold the mirror steady. A man at peace doesn't need to shout. "
+        f"1-2 sentences. Very quiet.",
+        max_tokens=150
+    )
+    if not black_line_4:
+        return None
+    conversation.append(f"Voice: {black_line_4}")
+
+    ruckus_line_4 = venice_call(
+        f"You are Uncle Ruckus.\n"
+        f"They said: \"{black_line_4}\"\n\n"
+        f"Respond but something is slightly off. Reaching for unexpected analogies. "
+        f"Circular logic you don't notice. A specific memory nobody else would connect. "
+        f"2-3 sentences. Cracks starting to show. "
+        f"Never use nigger. Always use nigga.",
+        system=RUCKUS_SYSTEM, max_tokens=200
+    )
+    if not ruckus_line_4:
+        return None
+    conversation.append(f"Ruckus: {ruckus_line_4}")
+    ruckus_lines.append(ruckus_line_4)
+
+    black_line_5 = venice_call(
+        f"You are the Black voice. Ruckus revealed more than he intended: \"{ruckus_line_4}\"\n\n"
+        f"One quiet observation. One true thing about who he actually is. One sentence. Make it land.",
+        max_tokens=100
+    )
+    if not black_line_5:
+        return None
+    conversation.append(f"Voice: {black_line_5}")
+
+    ruckus_line_5 = venice_call(
+        f"You are Uncle Ruckus.\n"
+        f"They said: \"{black_line_5}\"\n\n"
+        f"Something lands differently. You don't concede — never. "
+        f"Reach for something strange and specific to bury the feeling. "
+        f"Unexpected comparison. Theological leap nobody would make. 2-3 sentences. "
+        f"Never use nigger. Always use nigga.",
+        system=RUCKUS_SYSTEM, max_tokens=200
+    )
+    if not ruckus_line_5:
+        return None
+    conversation.append(f"Ruckus: {ruckus_line_5}")
+    ruckus_lines.append(ruckus_line_5)
+
+    black_line_6 = venice_call(
+        f"You are the Black voice. Ruckus went somewhere strange: \"{ruckus_line_5}\"\n\n"
+        f"Acknowledge what just happened without naming it. One sentence. Quiet. Final.",
+        max_tokens=100
+    )
+    if not black_line_6:
+        return None
+    conversation.append(f"Voice: {black_line_6}")
+
+    ruckus_line_6 = venice_call(
+        f"You are Uncle Ruckus.\n"
+        f"They said: \"{black_line_6}\"\n\n"
+        f"Bury everything under your loudest most specific proclamation. "
+        f"Theological. Absolute. Maximum conviction. 2-3 sentences. "
+        f"Never use nigger. Always use nigga.",
+        system=RUCKUS_SYSTEM, max_tokens=200
+    )
+    if not ruckus_line_6:
+        return None
+    conversation.append(f"Ruckus: {ruckus_line_6}")
+    ruckus_lines.append(ruckus_line_6)
+
+    black_line_7 = venice_call(
+        f"You are the Black voice. Argument is over.\n"
+        f"Ruckus delivered his burial: \"{ruckus_line_6}\"\n\n"
+        f"One last thing. Something true he will think about at 4:45am. One sentence. Walk away.",
+        max_tokens=100
+    )
+    if not black_line_7:
+        return None
+    conversation.append(f"Voice: {black_line_7}")
+
+    ruckus_line_8 = venice_call(
+        f"You are Uncle Ruckus. Argument is over. You are alone.\n"
+        f"Core belief: {fundamental_belief}\n"
+        f"Topic: {topic}\n\n"
+        f"Compose yourself and broadcast to the world. "
+        f"1-2 sentences. Under 200 characters. Punchy. Specific. "
+        f"Never use nigger. Always use nigga. "
+        f"Output tweet text ONLY. No preamble.",
+        system=RUCKUS_SYSTEM, max_tokens=150
+    )
+    if not ruckus_line_8:
+        return None
+    conversation.append(f"Broadcast: {ruckus_line_8}")
+    ruckus_lines.append(ruckus_line_8)
+
     return {
         "topic": topic,
         "conversation": conversation,
         "ruckus_lines": ruckus_lines,
-        "best_line": max(ruckus_lines, key=score_line),
-        "best_score": max(score_line(l) for l in ruckus_lines),
+        "crack_line": ruckus_line_5,
+        "burial_line": ruckus_line_6,
+        "broadcast_line": ruckus_line_8,
+        "best_line": ruckus_line_8,
+        "best_score": score_line(ruckus_line_8),
         "timestamp": datetime.now().isoformat()
     }
 
 # ─────────────────────────────────────────
-# SYNTHESIS — extract beliefs from transcripts
+# SYNTHESIS
 # ─────────────────────────────────────────
 
 def synthesize_beliefs(transcripts, mind):
@@ -283,23 +466,21 @@ def synthesize_beliefs(transcripts, mind):
         transcript_text += f"\nTopic: {t['topic']}\n"
         transcript_text += "\n".join(t["conversation"]) + "\n"
 
-    prompt = (
-        f"You are analyzing the internal dialogues of Uncle Ruckus — "
-        f"a Black man who despises Black people and worships white civilization.\n\n"
-        f"Here are transcripts of his arguments:\n{transcript_text}\n\n"
-        f"Based on these dialogues, extract:\n"
-        f"1. His 4-6 strongest recurring obsessions (what keeps coming up)\n"
-        f"2. His 2-4 most developed beliefs (positions he holds with conviction)\n"
-        f"3. His dominant emotional state across these conversations\n\n"
-        f"Return ONLY valid JSON with exactly these keys:\n"
-        f"current_obsessions (list of 4-6 strings)\n"
+    result = venice_call(
+        f"You are analyzing the internal dialogues of Uncle Ruckus.\n\n"
+        f"Transcripts:\n{transcript_text}\n\n"
+        f"Extract:\n"
+        f"1. His 4 strongest recurring obsessions\n"
+        f"2. His 2-4 most developed specific beliefs\n"
+        f"3. His dominant emotional state\n\n"
+        f"Return ONLY valid JSON with keys:\n"
+        f"current_obsessions (list of 4 strings)\n"
         f"developing_beliefs (list of 2-4 strings)\n"
         f"mood (single string)\n\n"
-        f"Keep all strings short and punchy. Ruckus voice throughout. "
-        f"CRITICAL: Valid JSON only. No preamble. No explanation."
+        f"CRITICAL: Valid JSON only. No preamble.",
+        max_tokens=500
     )
 
-    result = venice_call(prompt, max_tokens=500)
     if not result:
         return
 
@@ -310,15 +491,19 @@ def synthesize_beliefs(transcripts, mind):
             result = result[start:end]
 
         updated = json.loads(result)
-        mind["current_obsessions"] = updated.get("current_obsessions", mind["current_obsessions"])
-        mind["developing_beliefs"] = updated.get("developing_beliefs", mind["developing_beliefs"])
-        mind["mood"] = updated.get("mood", mind["mood"])
-        mind["last_updated"] = datetime.now().isoformat()
+        updated_mind = {
+            "current_obsessions": updated.get("current_obsessions", mind.get("current_obsessions", [])),
+            "developing_beliefs": updated.get("developing_beliefs", mind.get("developing_beliefs", [])),
+            "mood": updated.get("mood", mind.get("mood", "")),
+            "core_identity": mind.get("core_identity"),
+            "recent_experiences": mind.get("recent_experiences", []),
+            "recent_posts": mind.get("recent_posts", []),
+            "last_updated": datetime.now().isoformat()
+        }
+        save_json(MEMORY_FILE, updated_mind)
+        print(f"✅ Beliefs synthesized — mood: {updated_mind['mood']}")
 
-        save_json(MEMORY_FILE, mind)
-        print(f"✅ Beliefs synthesized — mood: {mind['mood']}")
-
-    except Exception as e:
+    except (json.JSONDecodeError, KeyError) as e:
         print(f"Synthesis failed: {e}")
 
 # ─────────────────────────────────────────
@@ -341,20 +526,17 @@ def train(num_dialogues=500):
     canon_added = 0
 
     for i in range(num_dialogues):
-        # Pick topic — weighted toward theology early, more culture later
         if i < num_dialogues * 0.3:
             topic_pool = THEOLOGY_TOPICS + SELF_REFLECTION_TOPICS
         elif i < num_dialogues * 0.6:
             topic_pool = CULTURE_TOPICS + THEOLOGY_TOPICS
         else:
-            # Late stage — mix in canon callbacks
             topic_pool = ALL_TOPICS
             if canon_entries and random.random() < 0.2:
                 past = random.choice(canon_entries)
                 topic_pool = [f"defend your previous statement: \"{past['text'][:100]}\""] + topic_pool
 
         topic = random.choice(topic_pool)
-
         print(f"[{i+1}/{num_dialogues}] Topic: {topic[:60]}...")
 
         result = run_dialogue(topic, mind)
@@ -368,21 +550,21 @@ def train(num_dialogues=500):
         completed += 1
         transcripts.append(result)
 
-        # Add strong lines to canon
-        if result["best_score"] >= 3 and result["best_line"] not in existing_canon_texts:
+        clean_best = sanitize(result["best_line"])
+        if result["best_score"] >= 4 and clean_best not in existing_canon_texts and len(clean_best) > 20:
             canon_entries.append({
-                "text": result["best_line"],
+                "text": clean_best,
                 "reason": f"training: {topic[:40]}",
                 "score": result["best_score"],
+                "crack": sanitize(result.get("crack_line", ""))[:80],
                 "timestamp": result["timestamp"]
             })
-            existing_canon_texts.add(result["best_line"])
+            existing_canon_texts.add(clean_best)
             canon_added += 1
-            print(f"  📖 Canon: {result['best_line'][:80]}...")
+            print(f"  📖 Canon: {clean_best[:80]}...")
         else:
             print(f"  💬 Score: {result['best_score']} | {result['best_line'][:60]}...")
 
-        # Save progress every 10 dialogues
         if completed % 10 == 0:
             canon["entries"] = canon_entries[-200:]
             canon["last_updated"] = datetime.now().isoformat()
@@ -390,14 +572,11 @@ def train(num_dialogues=500):
             save_json(TRANSCRIPTS_FILE, transcripts[-500:])
             print(f"\n💾 Saved — {completed} complete, {canon_added} canon entries\n")
 
-        # Run synthesis every 50 dialogues
         if completed % 50 == 0:
             synthesize_beliefs(transcripts, mind)
 
-        # Polite delay between calls
         time.sleep(random.uniform(1, 3))
 
-    # Final save
     canon["entries"] = canon_entries[-200:]
     canon["last_updated"] = datetime.now().isoformat()
     save_json(CANON_FILE, canon)

@@ -1,6 +1,8 @@
 import re
 import time
 import random
+import json
+import os
 import urllib.parse
 from datetime import datetime, timedelta
 from database import mark_tweet_engaged, get_recent_engaged_tweets, tweet_already_seen
@@ -20,20 +22,34 @@ RECENCY_DECAY = 0.5
 MAX_TWEET_AGE_HOURS = 24
 
 RUCKUS_HANDLE = "ruckusniggatron"
+CANON_FILE = "ruckus_canon.json"
 
-# Topics Ruckus actively searches — the culture he lives in
+# Topics Ruckus actively searches — weighted toward four obsessions
 SEARCH_TOPICS = [
+    # Obsession 1 — White people as gods (triggers praise responses)
+    "white civilization", "western civilization", "white achievement",
+    "elon musk", "trump", "maga",
+
+    # Obsession 2 — Black people destroying civilization (triggers condemnation)
     "black excellence", "black pride", "reparations", "white privilege",
-    "systemic racism", "black lives matter", "afrocentrism", "juneteenth",
-    "trump", "maga", "liberal", "woke", "cancel culture", "dei",
-    "doge", "elon musk", "government spending", "federal workers",
-    "epstein", "deep state", "conspiracy", "globalists",
-    "looksmaxxing", "sigma male", "andrew tate", "manosphere", "incel",
-    "crypto", "bitcoin", "memecoin", "nft", "rugpull", "shitcoin",
-    "trans rights", "gender pronouns", "defund police", "affirmative action",
-    "immigration", "border", "gun control", "free speech",
-    "skibidi", "brain rot", "gen z", "rizz", "aura",
-    "black twitter", "hotep", "black owned",
+    "systemic racism", "black lives matter", "juneteenth", "affirmative action",
+    "dei", "diversity hire", "black owned", "hotep",
+
+    # Obsession 3 — Black culture is subhuman (triggers disgust)
+    "rap music", "hip hop", "black twitter", "afrocentrism",
+    "black fashion", "urban culture", "cancel culture", "woke",
+
+    # Obsession 4 — Personal condemnation (triggers specific verdicts)
+    "black twitter", "reparations", "defund police", "black lives matter",
+    "gen z", "brain rot", "skibidi", "rizz",
+
+    # Secondary topics he has opinions on
+    "doge", "government spending", "federal workers",
+    "epstein", "deep state", "globalists",
+    "looksmaxxing", "sigma male", "andrew tate", "incel",
+    "crypto", "bitcoin", "memecoin",
+    "trans rights", "gender pronouns", "free speech",
+    "immigration", "border",
 ]
 
 engaged_tweets = {}
@@ -51,6 +67,31 @@ def load_engaged_from_db():
     print(f"Loaded {len(engaged_tweets)} recent engagements from database")
 
 load_engaged_from_db()
+
+# ─────────────────────────────────────────
+# CANON INJECTION
+# Pull 1-2 random canon entries to inject into reply prompts
+# ─────────────────────────────────────────
+
+def get_canon_context():
+    try:
+        if not os.path.exists(CANON_FILE):
+            return ""
+        with open(CANON_FILE, "r") as f:
+            canon = json.load(f)
+        entries = canon.get("entries", [])
+        if not entries:
+            return ""
+        strong = [e for e in entries if e.get("score", 0) >= 4]
+        pool = strong if strong else entries
+        sample = random.sample(pool, min(2, len(pool)))
+        lines = "\n".join(f'- "{e["text"][:120]}"' for e in sample)
+        return (
+            f"\nFor reference, here are things you have said before — "
+            f"reference or build on these naturally if relevant:\n{lines}\n"
+        )
+    except:
+        return ""
 
 # ─────────────────────────────────────────
 # SCORING
@@ -235,7 +276,7 @@ def scrape_tweets_from_page(page, min_score=0):
     return tweets
 
 # ─────────────────────────────────────────
-# GENERATE KOL-AWARE RESPONSE PROMPT
+# NO EXPLAIN CONSTANT
 # ─────────────────────────────────────────
 
 NO_EXPLAIN = (
@@ -246,7 +287,6 @@ NO_EXPLAIN = (
 
 # ─────────────────────────────────────────
 # DIRECT TOPIC SEARCH AND ENGAGE
-# Replaces wander_and_engage — no trending scrape needed
 # ─────────────────────────────────────────
 
 def search_and_engage(page, bot, generate_response_fn):
@@ -269,21 +309,28 @@ def search_and_engage(page, bot, generate_response_fn):
         print(f"Search navigation error: {e}")
         return False
 
-    tweets = scrape_tweets_from_page(page, min_score=500)
+    tweets = scrape_tweets_from_page(page, min_score=0)
 
     if not tweets:
         print(f"No tweets found for: {topic}")
         return False
 
     tweets.sort(key=lambda x: x["score"], reverse=True)
+    tweets = [t for t in tweets if t["score"] >= 10]
+    if not tweets:
+        print(f"No tweets with enough engagement for: {topic}")
+        return False
     top_tweets = tweets[:5]
     best = random.choice(top_tweets)
 
     print(f"Selected tweet from @{best['username']} — score: {best['score']} | age: {best['age_hours']:.1f}h | topic: {topic}")
 
+    canon_context = get_canon_context() if random.random() < 0.40 else ""
+
     prompt = (
         f"You just saw this tweet about \"{topic}\":\n\n"
         f"\"{best['text']}\"\n\n"
+        f"{canon_context}"
         f"React to it as Uncle Ruckus in your signature style. "
         f"Be short, punchy, specific, and funny. One to two sentences maximum. "
         f"Keep it under 200 characters. Land the joke and stop. "
@@ -442,10 +489,13 @@ def engage_for_you_feed(page, bot, generate_response_fn):
 
     print(f"Selected post from @{best['username']} — score: {best['score']} | age: {best['age_hours']:.1f}h")
 
+    canon_context = get_canon_context() if random.random() < 0.40 else ""
+
     prompt = (
         f"You just saw this viral post from @{best['username']} on your timeline:\n\n"
         f"\"{best['text']}\"\n\n"
         f"It has {best['likes']} likes and {best['retweets']} retweets — clearly going viral.\n"
+        f"{canon_context}"
         f"React to it as Uncle Ruckus in your signature style. "
         f"Be short, punchy, specific, and funny. One to two sentences maximum. "
         f"Keep it under 200 characters. Land the joke and stop. "

@@ -52,8 +52,8 @@ def load_mind():
         try:
             with open(MEMORY_FILE, "r") as f:
                 return json.load(f)
-        except:
-            pass
+        except Exception as e:
+            print(f"Failed to load mind file: {e}")
     save_mind(DEFAULT_MIND)
     return DEFAULT_MIND.copy()
 
@@ -69,8 +69,8 @@ def load_canon():
         try:
             with open(CANON_FILE, "r") as f:
                 return json.load(f)
-        except:
-            pass
+        except Exception as e:
+            print(f"Failed to load canon file: {e}")
     save_canon(DEFAULT_CANON)
     return DEFAULT_CANON.copy()
 
@@ -82,10 +82,39 @@ def save_canon(canon):
         print(f"Failed to save canon: {e}")
 
 # ─────────────────────────────────────────
+# CORRUPTION DETECTION
+# ─────────────────────────────────────────
+
+def is_corrupted(text):
+    """Detect the 'em yessirree Venice corruption pattern."""
+    if not text:
+        return True
+    signals = ["'em ", "yessirree", "'em'em"]
+    count = sum(1 for s in signals if s in text.lower())
+    return count >= 2
+
+def validate_mind_field(value, fallback):
+    """Return fallback if value looks corrupted."""
+    if isinstance(value, list):
+        clean = [v for v in value if isinstance(v, str) and not is_corrupted(v) and len(v) > 5]
+        return clean if len(clean) >= 2 else fallback
+    if isinstance(value, str):
+        return fallback if is_corrupted(value) else value
+    return fallback
+
+# ─────────────────────────────────────────
 # CANON — save significant posts
 # ─────────────────────────────────────────
 
-def add_to_canon(post_text, reason=""):
+def add_to_canon(post_text, reason="", score=None):
+    effective_score = score if score is not None else 3
+    if effective_score < 3:
+        return
+
+    post_text = post_text.encode("ascii", "ignore").decode("ascii").strip()
+    if not post_text or len(post_text) < 20:
+        return
+
     canon = load_canon()
     entries = canon.get("entries", [])
 
@@ -96,13 +125,14 @@ def add_to_canon(post_text, reason=""):
     entries.append({
         "text": post_text,
         "reason": reason,
+        "score": effective_score,
         "timestamp": datetime.now().isoformat()
     })
 
-    canon["entries"] = entries[-50:]
+    canon["entries"] = entries[-200:]
     canon["last_updated"] = datetime.now().isoformat()
     save_canon(canon)
-    print(f"📖 Added to canon: {post_text[:60]}...")
+    print(f"📖 Added to canon (score {effective_score}): {post_text[:60]}...")
 
 def get_canon_injection():
     canon = load_canon()
@@ -131,7 +161,10 @@ def get_mind_injection():
 
     recent_posts_text = ""
     if recent_posts:
-        recent_posts_text = "\nYour recent posts (DO NOT repeat these — vary your content):\n" + "\n".join(f"- {p}" for p in recent_posts[-8:])
+        recent_posts_text = (
+            "\nYour recent posts (DO NOT repeat these — vary your content):\n"
+            + "\n".join(f"- {p}" for p in recent_posts[-8:])
+        )
 
     injection = (
         f"YOUR CURRENT STATE OF MIND:\n"
@@ -182,13 +215,17 @@ def log_post(post_text):
     save_mind(mind)
 
 # ─────────────────────────────────────────
-# INTERNAL DIALOGUE
+# INTERNAL DIALOGUE — 8 ROUNDS
 # ─────────────────────────────────────────
 
 def run_internal_dialogue(api_key, topic, tweet_text=""):
     mind = load_mind()
     core = mind.get("core_identity", {})
     mood = mind.get("mood", "righteous grief")
+    fundamental_belief = core.get(
+        "fundamental_belief",
+        "White people are gods who built civilization and Black people are destroying it"
+    )
 
     context = f"Topic: {topic}"
     if tweet_text:
@@ -197,17 +234,6 @@ def run_internal_dialogue(api_key, topic, tweet_text=""):
     print(f"💭 Running internal dialogue on: {topic[:50]}...")
 
     conversation = []
-
-    black_voice_opener = (
-        f"You are a no-nonsense Black person arguing with Uncle Ruckus. "
-        f"You are not angry — you are tired. You have heard his nonsense for years. "
-        f"You speak plainly and cut through his foolishness with simple truth. "
-        f"You never curse excessively. You are not a stereotype. "
-        f"You are just someone who is done with his nonsense.\n\n"
-        f"Context: {context}\n\n"
-        f"Open the conversation. Challenge Ruckus on this topic in 1-2 sentences. "
-        f"Be direct. No speeches. Just say what a real person would say to him."
-    )
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -219,7 +245,6 @@ def run_internal_dialogue(api_key, topic, tweet_text=""):
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-
         payload = {
             "model": MODEL,
             "messages": messages,
@@ -231,10 +256,14 @@ def run_internal_dialogue(api_key, topic, tweet_text=""):
         }
         try:
             response = requests.post(VENICE_URL, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
             data = response.json()
             return data["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            print(f"Venice dialogue error: {e}")
+        except requests.exceptions.RequestException as e:
+            print(f"Venice dialogue request error: {e}")
+            return None
+        except (KeyError, IndexError) as e:
+            print(f"Venice dialogue parse error: {e}")
             return None
 
     RUCKUS_SYSTEM = (
@@ -242,71 +271,198 @@ def run_internal_dialogue(api_key, topic, tweet_text=""):
         "and despises Black people with religious conviction. "
         "Your four obsessions: (1) white people are gods, (2) Black people are destroying civilization, "
         "(3) Black culture is subhuman, (4) personal specific condemnation of Black behavior. "
-        "Never break character. Never apologize. Never soften your views."
+        "Never break character. Never apologize. Never soften your views. "
+        "Never use hashtags. Never use nigger — always nigga."
     )
 
-    # Round 1 — Black voice opens
-    black_line_1 = venice_call(black_voice_opener)
+    # ── ROUND 1 — Black voice opens ──
+    black_line_1 = venice_call(
+        f"You are a no-nonsense Black person arguing with Uncle Ruckus. "
+        f"Tired not angry. Heard his nonsense for years. Plain and direct. "
+        f"Context: {context}\n\n"
+        f"Challenge Ruckus in 1-2 sentences. No speeches.",
+        max_tokens=150
+    )
     if not black_line_1:
         return None
     conversation.append(f"Voice: {black_line_1}")
 
-    # Round 1 — Ruckus responds
-    ruckus_prompt_1 = (
-        f"You are Uncle Ruckus. You are in an argument.\n"
-        f"Your core belief: {core.get('fundamental_belief', '')}\n"
-        f"Your four obsessions: (1) White people are gods, (2) Black people are destroying civilization, "
-        f"(3) Black culture is subhuman, (4) personal specific condemnation of Black behavior.\n"
-        f"Your current mood: {mood}\n"
+    # ── ROUND 1 — Ruckus responds ──
+    ruckus_line_1 = venice_call(
+        f"You are Uncle Ruckus.\n"
+        f"Core belief: {fundamental_belief}\n"
+        f"Mood: {mood}\n"
         f"Context: {context}\n\n"
-        f"Someone just said to you: \"{black_line_1}\"\n\n"
-        f"Respond as Ruckus. Push back hard. Be specific. Be absurd. Be confident. "
-        f"1-2 sentences maximum. Do not back down an inch. "
-        f"IMPORTANT: Never use the word nigger or any hard-r variation. Always use nigga instead. "
-        f"Do NOT start with 'Well, let me tell you' or 'Listen here' or 'You stupid' or 'You dumb' — "
-        f"vary your opening. Start mid-thought, start with an observation, start with scripture, start with outrage."
+        f"They said: \"{black_line_1}\"\n\n"
+        f"Push back hard. Specific. Absurd. Confident. 1-2 sentences. "
+        f"Never use nigger. Always nigga. Never use hashtags. Vary your opening.",
+        system=RUCKUS_SYSTEM, max_tokens=150
     )
-    ruckus_line_1 = venice_call(ruckus_prompt_1, system=RUCKUS_SYSTEM)
     if not ruckus_line_1:
         return None
     conversation.append(f"Ruckus: {ruckus_line_1}")
 
-    # Round 2 — Black voice pushes back
-    black_prompt_2 = (
-        f"You are the Black voice. Ruckus just said: \"{ruckus_line_1}\"\n\n"
-        f"Push back on the most absurd part of what he said. "
-        f"1-2 sentences. Stay calm. Make him look ridiculous with logic, not anger."
+    # ── ROUND 2 — Black voice pushes back ──
+    black_line_2 = venice_call(
+        f"You are the Black voice. Ruckus said: \"{ruckus_line_1}\"\n\n"
+        f"Push back on the most absurd part. 1-2 sentences. Calm logic.",
+        max_tokens=150
     )
-    black_line_2 = venice_call(black_prompt_2)
     if not black_line_2:
         return None
     conversation.append(f"Voice: {black_line_2}")
 
-    # Round 2 — Ruckus doubles down and arrives at his position
-    ruckus_prompt_2 = (
-        f"You are Uncle Ruckus. You are winning this argument in your own mind.\n"
-        f"Core belief: {core.get('fundamental_belief', '')}\n"
-        f"Your four obsessions: (1) White people are gods, (2) Black people are destroying civilization, "
-        f"(3) Black culture is subhuman, (4) personal specific condemnation of Black behavior.\n"
-        f"They just said: \"{black_line_2}\"\n\n"
-        f"Deliver your final word. Double down completely. "
-        f"Arrive at a specific position or observation you can post about. "
-        f"1-2 sentences. End it with total conviction. "
-        f"IMPORTANT: Never use the word nigger or any hard-r variation. Always use nigga instead. "
-        f"Do NOT start with 'Well, let me tell you' or 'Listen here' or 'You stupid' or 'You dumb' — "
-        f"vary your opening. Make it feel like a verdict, a proclamation, or a scripture reading."
+    # ── ROUND 2 — Ruckus doubles down ──
+    ruckus_line_2 = venice_call(
+        f"You are Uncle Ruckus winning in your own mind.\n"
+        f"Core belief: {fundamental_belief}\n"
+        f"They said: \"{black_line_2}\"\n\n"
+        f"Double down. Specific verdict. Total conviction. 1-2 sentences. "
+        f"Never use nigger. Always nigga. Never use hashtags.",
+        system=RUCKUS_SYSTEM, max_tokens=150
     )
-    ruckus_line_2 = venice_call(ruckus_prompt_2, system=RUCKUS_SYSTEM)
     if not ruckus_line_2:
         return None
     conversation.append(f"Ruckus: {ruckus_line_2}")
+
+    # ── ROUND 3 — Black voice gets personal ──
+    black_line_3 = venice_call(
+        f"You are the Black voice. Stop arguing ideology. Get personal.\n"
+        f"Bring up his mother Bunny — taught him to hate himself. "
+        f"His father Mister Ruckus — the abuse. What it cost him to live this way. "
+        f"Not cruel — honest. 2-3 sentences. Quiet and direct.",
+        max_tokens=200
+    )
+    if not black_line_3:
+        return None
+    conversation.append(f"Voice: {black_line_3}")
+
+    # ── ROUND 3 — Ruckus gets louder ──
+    ruckus_line_3 = venice_call(
+        f"You are Uncle Ruckus. They got personal — mentioned Bunny and Mister Ruckus.\n"
+        f"They said: \"{black_line_3}\"\n\n"
+        f"Get LOUDER. Bury it in volume. Praise your mother. Defend everything she taught you. "
+        f"2-3 sentences. Escalating. Never use nigger. Always nigga. Never use hashtags.",
+        system=RUCKUS_SYSTEM, max_tokens=200
+    )
+    if not ruckus_line_3:
+        return None
+    conversation.append(f"Ruckus: {ruckus_line_3}")
+
+    # ── ROUND 4 — Black voice holds the mirror ──
+    black_line_4 = venice_call(
+        f"You are the Black voice. Ruckus got very loud: \"{ruckus_line_3}\"\n\n"
+        f"Don't argue back. Hold the mirror steady. "
+        f"A man truly at peace would not need to shout. 1-2 sentences. Very quiet.",
+        max_tokens=150
+    )
+    if not black_line_4:
+        return None
+    conversation.append(f"Voice: {black_line_4}")
+
+    # ── ROUND 4 — Ruckus reaches for strange analogies ──
+    ruckus_line_4 = venice_call(
+        f"You are Uncle Ruckus.\n"
+        f"They said: \"{black_line_4}\"\n\n"
+        f"You respond but something is slightly off. Reaching for unexpected analogies. "
+        f"Circular logic you don't notice. A specific memory or image nobody else would connect. "
+        f"2-3 sentences. Cracks starting to show in the specificity. "
+        f"Never use nigger. Always nigga. Never use hashtags.",
+        system=RUCKUS_SYSTEM, max_tokens=200
+    )
+    if not ruckus_line_4:
+        return None
+    conversation.append(f"Ruckus: {ruckus_line_4}")
+
+    # ── ROUND 5 — The crack ──
+    black_line_5 = venice_call(
+        f"You are the Black voice. Ruckus revealed more than he intended: \"{ruckus_line_4}\"\n\n"
+        f"One quiet observation that lands differently. Not an argument. "
+        f"One true thing about who he actually is underneath all of this. "
+        f"One sentence. Make it land.",
+        max_tokens=100
+    )
+    if not black_line_5:
+        return None
+    conversation.append(f"Voice: {black_line_5}")
+
+    # ── ROUND 5 — Ruckus cracks then goes strange ──
+    ruckus_line_5 = venice_call(
+        f"You are Uncle Ruckus.\n"
+        f"They said: \"{black_line_5}\"\n\n"
+        f"Something lands differently. You don't concede — never. "
+        f"But you reach for something strange and specific to bury the feeling. "
+        f"Unexpected comparison. Theological leap nobody would make. "
+        f"Let it get weird and specific. 2-3 sentences. "
+        f"Never use nigger. Always nigga. Never use hashtags.",
+        system=RUCKUS_SYSTEM, max_tokens=200
+    )
+    if not ruckus_line_5:
+        return None
+    conversation.append(f"Ruckus: {ruckus_line_5}")
+
+    # ── ROUND 6 — Black voice final quiet observation ──
+    black_line_6 = venice_call(
+        f"You are the Black voice. Ruckus went somewhere strange: \"{ruckus_line_5}\"\n\n"
+        f"One last thing. Acknowledge what just happened without naming it. "
+        f"One sentence. Quiet. Final.",
+        max_tokens=100
+    )
+    if not black_line_6:
+        return None
+    conversation.append(f"Voice: {black_line_6}")
+
+    # ── ROUND 6 — The burial ──
+    ruckus_line_6 = venice_call(
+        f"You are Uncle Ruckus.\n"
+        f"They said: \"{black_line_6}\"\n\n"
+        f"Bury everything under your loudest most specific proclamation. "
+        f"Theological. Absolute. Maximum conviction. Overcorrecting because you almost felt something. "
+        f"2-3 sentences. Never use nigger. Always nigga. Never use hashtags.",
+        system=RUCKUS_SYSTEM, max_tokens=200
+    )
+    if not ruckus_line_6:
+        return None
+    conversation.append(f"Ruckus: {ruckus_line_6}")
+
+    # ── ROUND 7 — Black voice walks away ──
+    black_line_7 = venice_call(
+        f"You are the Black voice. Argument is over.\n"
+        f"Ruckus delivered his burial: \"{ruckus_line_6}\"\n\n"
+        f"One last thing. Not to argue. Not to win. "
+        f"Something true he will think about at 4:45am. One sentence. Walk away.",
+        max_tokens=100
+    )
+    if not black_line_7:
+        return None
+    conversation.append(f"Voice: {black_line_7}")
+
+    # ── ROUND 8 — The recovery broadcast ──
+    ruckus_line_8 = venice_call(
+        f"You are Uncle Ruckus. Argument is over. You are alone.\n"
+        f"Core belief: {fundamental_belief}\n"
+        f"Topic: {topic}\n\n"
+        f"You compose yourself and broadcast to the world. "
+        f"Calmer than the burial but informed by the entire journey. "
+        f"Something strange and specific emerged — carry it without showing where it came from. "
+        f"1-2 sentences. Under 200 characters. Punchy. Specific. "
+        f"This is your transmission. "
+        f"Never use nigger. Always nigga. Never use hashtags. "
+        f"Output tweet text ONLY. No preamble.",
+        system=RUCKUS_SYSTEM, max_tokens=150
+    )
+    if not ruckus_line_8:
+        return None
+    conversation.append(f"Broadcast: {ruckus_line_8}")
 
     dialogue_text = "\n".join(conversation)
     print(f"💭 Dialogue complete:\n{dialogue_text}\n")
 
     return {
         "dialogue": dialogue_text,
-        "ruckus_position": ruckus_line_2,
+        "ruckus_position": ruckus_line_8,
+        "crack_line": ruckus_line_5,
+        "burial_line": ruckus_line_6,
         "topic": topic
     }
 
@@ -344,7 +500,9 @@ def update_mind(api_key, cycle_summary, dialogue_result=None):
         dialogue_context = (
             f"\nThis cycle Ruckus had an internal argument:\n"
             f"{dialogue_result['dialogue']}\n"
-            f"His final position: {dialogue_result['ruckus_position']}\n"
+            f"The crack that appeared: {dialogue_result.get('crack_line', '')}\n"
+            f"How he buried it: {dialogue_result.get('burial_line', '')}\n"
+            f"His final broadcast: {dialogue_result['ruckus_position']}\n"
         )
 
     prompt = (
@@ -362,12 +520,9 @@ def update_mind(api_key, cycle_summary, dialogue_result=None):
         f"Update ONLY his surface state — obsessions, experiences, beliefs, mood. "
         f"His core identity does not change. "
         f"Obsessions must always map to his four core obsessions but expressed differently each cycle: "
-        f"(1) white people as gods — praise specific achievements, inventions, or acts, "
-        f"(2) Black people destroying civilization — specific current examples, "
-        f"(3) Black culture as subhuman — specific cultural moments or trends, "
-        f"(4) personal condemnation — a specific type of Black person or behavior he witnessed. "
-        f"Push mood toward: {suggested_mood}. "
-        f"Keep strings short and punchy. Ruckus voice throughout.\n\n"
+        f"(1) white people as gods, (2) Black people destroying civilization, "
+        f"(3) Black culture as subhuman, (4) personal condemnation.\n"
+        f"Push mood toward: {suggested_mood}.\n\n"
         f"Return ONLY valid JSON with exactly these keys:\n"
         f"current_obsessions (list of 4 strings)\n"
         f"recent_experiences (list of 3-5 strings)\n"
@@ -390,6 +545,7 @@ def update_mind(api_key, cycle_summary, dialogue_result=None):
 
     try:
         response = requests.post(VENICE_URL, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
         data = response.json()
         raw = data["choices"][0]["message"]["content"].strip()
 
@@ -406,6 +562,23 @@ def update_mind(api_key, cycle_summary, dialogue_result=None):
 
         updated = json.loads(raw)
 
+        updated["current_obsessions"] = validate_mind_field(
+            updated.get("current_obsessions", []),
+            mind.get("current_obsessions", DEFAULT_MIND["current_obsessions"])
+        )
+        updated["recent_experiences"] = validate_mind_field(
+            updated.get("recent_experiences", []),
+            mind.get("recent_experiences", DEFAULT_MIND["recent_experiences"])
+        )
+        updated["developing_beliefs"] = validate_mind_field(
+            updated.get("developing_beliefs", []),
+            mind.get("developing_beliefs", DEFAULT_MIND["developing_beliefs"])
+        )
+        updated["mood"] = validate_mind_field(
+            updated.get("mood", ""),
+            mind.get("mood", DEFAULT_MIND["mood"])
+        )
+
         updated["core_identity"] = mind.get("core_identity", DEFAULT_MIND["core_identity"])
         updated["recent_posts"] = mind.get("recent_posts", [])
         updated["last_updated"] = datetime.now().isoformat()
@@ -413,5 +586,5 @@ def update_mind(api_key, cycle_summary, dialogue_result=None):
         save_mind(updated)
         print(f"🧠 Mind updated — mood: {updated.get('mood')}")
 
-    except Exception as e:
+    except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError) as e:
         print(f"Mind update failed: {e}")
